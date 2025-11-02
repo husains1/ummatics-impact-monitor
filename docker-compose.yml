@@ -1,0 +1,98 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: ummatics_db
+    environment:
+      POSTGRES_DB: ${DB_NAME:-ummatics_monitor}
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    ports:
+      - "5432:5432"
+    networks:
+      - ummatics_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: ummatics_api
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-ummatics_monitor}
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:-changeme}
+      GOOGLE_ALERTS_RSS_URL: ${GOOGLE_ALERTS_RSS_URL}
+      TWITTER_BEARER_TOKEN: ${TWITTER_BEARER_TOKEN}
+      GA4_PROPERTY_ID: ${GA4_PROPERTY_ID}
+      CONTACT_EMAIL: ${CONTACT_EMAIL:-contact@ummatics.org}
+      GOOGLE_APPLICATION_CREDENTIALS: /app/credentials/google-credentials.json
+    volumes:
+      - ./backend:/app
+      - ./credentials:/app/credentials
+    ports:
+      - "5000:5000"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - ummatics_network
+    restart: unless-stopped
+
+  scheduler:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: ummatics_scheduler
+    command: python scheduler.py
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-ummatics_monitor}
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      GOOGLE_ALERTS_RSS_URL: ${GOOGLE_ALERTS_RSS_URL}
+      TWITTER_BEARER_TOKEN: ${TWITTER_BEARER_TOKEN}
+      GA4_PROPERTY_ID: ${GA4_PROPERTY_ID}
+      CONTACT_EMAIL: ${CONTACT_EMAIL:-contact@ummatics.org}
+      GOOGLE_APPLICATION_CREDENTIALS: /app/credentials/google-credentials.json
+    volumes:
+      - ./backend:/app
+      - ./credentials:/app/credentials
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - ummatics_network
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: ummatics_frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+    networks:
+      - ummatics_network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+
+networks:
+  ummatics_network:
+    driver: bridge

@@ -1,0 +1,500 @@
+import os
+import psycopg2
+from datetime import datetime, timedelta
+import requests
+import feedparser
+import logging
+from google.analytics.data_v1beta import BetaAnalyticsDataClient
+from google.analytics.data_v1beta.types import (
+    DateRange,
+    Dimension,
+    Metric,
+    RunReportRequest,
+)
+from google.oauth2 import service_account
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Database configuration
+DB_CONFIG = {
+    'host': os.getenv('DB_HOST', 'db'),
+    'port': os.getenv('DB_PORT', '5432'),
+    'database': os.getenv('DB_NAME', 'ummatics_monitor'),
+    'user': os.getenv('DB_USER', 'postgres'),
+    'password': os.getenv('DB_PASSWORD', 'postgres')
+}
+
+# API Configuration
+GOOGLE_ALERTS_RSS_URL = os.getenv('GOOGLE_ALERTS_RSS_URL', '')
+TWITTER_BEARER_TOKEN = os.getenv('TWITTER_BEARER_TOKEN', '')
+GA4_PROPERTY_ID = os.getenv('GA4_PROPERTY_ID', '')
+CONTACT_EMAIL = os.getenv('CONTACT_EMAIL', 'contact@ummatics.org')
+
+
+def get_db_connection():
+    """Create database connection"""
+    return psycopg2.connect(**DB_CONFIG)
+
+
+def get_current_week_dates():
+    """Get the start and end dates of the current week (Monday to Sunday)"""
+    today = datetime.now().date()
+    monday = today - timedelta(days=today.weekday())
+    sunday = monday + timedelta(days=6)
+    return monday, sunday
+
+
+def ingest_google_alerts():
+    """Fetch news mentions from Google Alerts RSS feed"""
+    logger.info("Starting Google Alerts ingestion...")
+    
+    if not GOOGLE_ALERTS_RSS_URL:
+        logger.warning("Google Alerts RSS URL not configured")
+        return
+    
+    try:
+        feed = feedparser.parse(GOOGLE_ALERTS_RSS_URL)
+        monday, sunday = get_current_week_dates()
+        
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        new_mentions = 0
+        for entry in feed.entries:
+            try:
+                title = entry.get('title', '')
+                url = entry.get('link', '')
+                source = entry.get('source', {}).get('title', 'Unknown')
+                published_at = datetime(*entry.published_parsed[:6]) if hasattr(entry, 'published_parsed') else datetime.now()
+                snippet = entry.get('summary', '')[:500]
+                
+                # Insert news mention
+                cur.execute("""
+                    INSERT INTO news_mentions (week_start_date, title, url, source, published_at, snippet)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (url, title) DO NOTHING
+                """, (monday, title, url, source, published_at, snippet))
+                
+                if cur.rowcount > 0:
+                    new_mentions += 1
+                    
+            except Exception as e:
+                logger.error(f"Error processing news entry: {e}")
+                continue
+        
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        logger.info(f"Google Alerts ingestion complete. New mentions: {new_mentions}")
+        
+    except Exception as e:
+        logger.error(f"Error in Google Alerts ingestion: {e}")
+
+
+def ingest_twitter():
+    """Fetch Twitter mentions and metrics"""
+    logger.info("Starting Twitter ingestion...")
+    
+    if not TWITTER_BEARER_TOKEN:
+        logger.warning("Twitter Bearer Token not configured")
+        return
+    
+    try:
+        monday, sunday = get_current_week_dates()
+        
+        # Search for mentions
+        search_url = "https://api.twitter.com/2/tweets/search/recent"
+        headers = {"Authorization": f"Bearer {TWITTER_BEARER_TOKEN}"}
+        
+        params = {
+            "query": "Ummatics OR @ummatics",
+            "max_results": 100,
+            "tweet.fields": "created_at,public_metrics,author_id",
+            "expansions": "author_id",
+            "user.fields": "username"
+        }
+        
+        response = requests.get(search_url, headers=headers, params=params)
+        response.raise_for_status()
+        data = response.json()
+        
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        new_mentions = 0
+        total_engagement = 0
+        
+        if 'data' in data:
+            users = {user['id']: user for user in data.get('includes', {}).get('users', [])}
+            
+            for tweet in data['data']:
+                try:
+                    tweet_id = tweet['id']
+                    author_id = tweet.get('author_id', '')
+                    author_username = users.get(author_id, {}).get('username', 'Unknown')
+                    content = tweet.get('text', '')
+                    post_url = f"https://twitter.com/{author_username}/status/{tweet_id}"
+                    posted_at = datetime.fromisoformat(tweet['created_at'].replace('Z', '+00:00'))
+                    
+                    metrics = tweet.get('public_metrics', {})
+                    likes = metrics.get('like_count', 0)
+                    retweets = metrics.get('retweet_count', 0)
+                    replies = metrics.get('reply_count', 0)
+                    
+                    total_engagement += likes + retweets + replies
+                    
+                    # Insert social mention
+                    cur.execute("""
+                        INSERT INTO social_mentions 
+                        (week_start_date, platform, post_id, author, content, post_url, posted_at, likes, retweets, replies)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (post_id) DO NOTHING
+                    """, (monday, 'Twitter', tweet_id, author_username, content, post_url, posted_at, likes, retweets, replies))
+                    
+                    if cur.rowcount > 0:
+                        new_mentions += 1
+                        
+                except Exception as e:
+                    logger.error(f"Error processing tweet: {e}")
+                    continue
+        
+        # Get follower count (you would need to replace with actual account ID)
+        # For now, using a placeholder
+        follower_count = 0
+        engagement_rate = (total_engagement / max(new_mentions, 1)) if new_mentions > 0 else 0
+        
+        # Update social media metrics
+        cur.execute("""
+            INSERT INTO social_media_metrics (week_start_date, platform, follower_count, mentions_count, engagement_rate)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (week_start_date, platform) 
+            DO UPDATE SET 
+                follower_count = EXCLUDED.follower_count,
+                mentions_count = EXCLUDED.mentions_count,
+                engagement_rate = EXCLUDED.engagement_rate
+        """, (monday, 'Twitter', follower_count, new_mentions, engagement_rate))
+        
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        logger.info(f"Twitter ingestion complete. New mentions: {new_mentions}")
+        
+    except Exception as e:
+        logger.error(f"Error in Twitter ingestion: {e}")
+
+
+def ingest_google_analytics():
+    """Fetch Google Analytics 4 data"""
+    logger.info("Starting Google Analytics ingestion...")
+    
+    if not GA4_PROPERTY_ID:
+        logger.warning("GA4 Property ID not configured")
+        return
+    
+    try:
+        # Initialize GA4 client
+        credentials_path = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
+        if credentials_path and os.path.exists(credentials_path):
+            credentials = service_account.Credentials.from_service_account_file(credentials_path)
+            client = BetaAnalyticsDataClient(credentials=credentials)
+        else:
+            logger.warning("Google service account credentials not found")
+            return
+        
+        monday, sunday = get_current_week_dates()
+        
+        # Request basic metrics
+        request = RunReportRequest(
+            property=f"properties/{GA4_PROPERTY_ID}",
+            date_ranges=[DateRange(start_date=monday.isoformat(), end_date=sunday.isoformat())],
+            metrics=[
+                Metric(name="sessions"),
+                Metric(name="totalUsers"),
+                Metric(name="screenPageViews"),
+                Metric(name="averageSessionDuration"),
+                Metric(name="bounceRate"),
+            ],
+        )
+        
+        response = client.run_report(request)
+        
+        if response.rows:
+            row = response.rows[0]
+            sessions = int(row.metric_values[0].value)
+            users = int(row.metric_values[1].value)
+            pageviews = int(row.metric_values[2].value)
+            avg_duration = float(row.metric_values[3].value)
+            bounce_rate = float(row.metric_values[4].value)
+            
+            conn = get_db_connection()
+            cur = conn.cursor()
+            
+            # Insert website metrics
+            cur.execute("""
+                INSERT INTO website_metrics 
+                (week_start_date, total_sessions, total_users, total_pageviews, avg_session_duration, bounce_rate)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (week_start_date) 
+                DO UPDATE SET 
+                    total_sessions = EXCLUDED.total_sessions,
+                    total_users = EXCLUDED.total_users,
+                    total_pageviews = EXCLUDED.total_pageviews,
+                    avg_session_duration = EXCLUDED.avg_session_duration,
+                    bounce_rate = EXCLUDED.bounce_rate
+            """, (monday, sessions, users, pageviews, avg_duration, bounce_rate))
+            
+            conn.commit()
+            cur.close()
+            conn.close()
+            
+            logger.info(f"Google Analytics ingestion complete. Sessions: {sessions}, Users: {users}")
+        
+        # Fetch top pages
+        request_pages = RunReportRequest(
+            property=f"properties/{GA4_PROPERTY_ID}",
+            date_ranges=[DateRange(start_date=monday.isoformat(), end_date=sunday.isoformat())],
+            dimensions=[Dimension(name="pagePath")],
+            metrics=[
+                Metric(name="screenPageViews"),
+                Metric(name="averageSessionDuration"),
+            ],
+            limit=10,
+        )
+        
+        response_pages = client.run_report(request_pages)
+        
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        for row in response_pages.rows:
+            page_path = row.dimension_values[0].value
+            pageviews = int(row.metric_values[0].value)
+            avg_time = float(row.metric_values[1].value)
+            
+            cur.execute("""
+                INSERT INTO top_pages (week_start_date, page_path, pageviews, avg_time_on_page)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (week_start_date, page_path) 
+                DO UPDATE SET 
+                    pageviews = EXCLUDED.pageviews,
+                    avg_time_on_page = EXCLUDED.avg_time_on_page
+            """, (monday, page_path, pageviews, avg_time))
+        
+        # Fetch geographic data
+        request_geo = RunReportRequest(
+            property=f"properties/{GA4_PROPERTY_ID}",
+            date_ranges=[DateRange(start_date=monday.isoformat(), end_date=sunday.isoformat())],
+            dimensions=[Dimension(name="country")],
+            metrics=[
+                Metric(name="sessions"),
+                Metric(name="totalUsers"),
+            ],
+            limit=20,
+        )
+        
+        response_geo = client.run_report(request_geo)
+        
+        for row in response_geo.rows:
+            country = row.dimension_values[0].value
+            sessions = int(row.metric_values[0].value)
+            users = int(row.metric_values[1].value)
+            
+            cur.execute("""
+                INSERT INTO geographic_metrics (week_start_date, country, sessions, users)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (week_start_date, country) 
+                DO UPDATE SET 
+                    sessions = EXCLUDED.sessions,
+                    users = EXCLUDED.users
+            """, (monday, country, sessions, users))
+        
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+    except Exception as e:
+        logger.error(f"Error in Google Analytics ingestion: {e}")
+
+
+def ingest_openalex():
+    """Fetch citation data from OpenAlex API"""
+    logger.info("Starting OpenAlex ingestion...")
+    
+    try:
+        # Search for works related to Ummatics
+        # You'll need to customize the search query based on your specific works/authors
+        base_url = "https://api.openalex.org/works"
+        headers = {"User-Agent": f"mailto:{CONTACT_EMAIL}"}
+        
+        params = {
+            "filter": "institutions.ror:your_institution_ror_id",  # Replace with actual ROR ID
+            "per_page": 200,
+            "sort": "cited_by_count:desc"
+        }
+        
+        response = requests.get(base_url, headers=headers, params=params)
+        response.raise_for_status()
+        data = response.json()
+        
+        monday, sunday = get_current_week_dates()
+        
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        total_citations = 0
+        works_count = 0
+        
+        for work in data.get('results', []):
+            try:
+                work_id = work['id']
+                doi = work.get('doi', '')
+                title = work.get('title', 'Untitled')
+                
+                # Extract authors
+                authors_list = work.get('authorships', [])
+                authors = ', '.join([a.get('author', {}).get('display_name', '') for a in authors_list[:5]])
+                
+                publication_date = work.get('publication_date')
+                if publication_date:
+                    publication_date = datetime.fromisoformat(publication_date).date()
+                
+                cited_by_count = work.get('cited_by_count', 0)
+                total_citations += cited_by_count
+                works_count += 1
+                
+                source_url = f"https://openalex.org/{work_id.split('/')[-1]}"
+                
+                # Insert or update citation
+                cur.execute("""
+                    INSERT INTO citations (work_id, doi, title, authors, publication_date, cited_by_count, source_url, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (work_id) 
+                    DO UPDATE SET 
+                        cited_by_count = EXCLUDED.cited_by_count,
+                        updated_at = EXCLUDED.updated_at
+                """, (work_id, doi, title, authors, publication_date, cited_by_count, source_url, datetime.now()))
+                
+            except Exception as e:
+                logger.error(f"Error processing OpenAlex work: {e}")
+                continue
+        
+        # Calculate new citations this week (simplified - compare with previous week)
+        cur.execute("""
+            SELECT total_citations FROM citation_metrics 
+            ORDER BY week_start_date DESC LIMIT 1
+        """)
+        result = cur.fetchone()
+        previous_total = result[0] if result else 0
+        new_citations = max(0, total_citations - previous_total)
+        
+        # Insert citation metrics
+        cur.execute("""
+            INSERT INTO citation_metrics (week_start_date, total_citations, new_citations_this_week, total_works)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (week_start_date) 
+            DO UPDATE SET 
+                total_citations = EXCLUDED.total_citations,
+                new_citations_this_week = EXCLUDED.new_citations_this_week,
+                total_works = EXCLUDED.total_works
+        """, (monday, total_citations, new_citations, works_count))
+        
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        logger.info(f"OpenAlex ingestion complete. Total citations: {total_citations}, Works: {works_count}")
+        
+    except Exception as e:
+        logger.error(f"Error in OpenAlex ingestion: {e}")
+
+
+def update_weekly_snapshot():
+    """Update the weekly snapshot with aggregated data"""
+    logger.info("Updating weekly snapshot...")
+    
+    try:
+        monday, sunday = get_current_week_dates()
+        
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        # Count news mentions
+        cur.execute("""
+            SELECT COUNT(*) FROM news_mentions WHERE week_start_date = %s
+        """, (monday,))
+        news_count = cur.fetchone()[0]
+        
+        # Count social mentions
+        cur.execute("""
+            SELECT COUNT(*) FROM social_mentions WHERE week_start_date = %s
+        """, (monday,))
+        social_count = cur.fetchone()[0]
+        
+        # Get total citations
+        cur.execute("""
+            SELECT total_citations FROM citation_metrics WHERE week_start_date = %s
+        """, (monday,))
+        result = cur.fetchone()
+        citations_count = result[0] if result else 0
+        
+        # Get website sessions
+        cur.execute("""
+            SELECT total_sessions FROM website_metrics WHERE week_start_date = %s
+        """, (monday,))
+        result = cur.fetchone()
+        sessions_count = result[0] if result else 0
+        
+        # Insert or update weekly snapshot
+        cur.execute("""
+            INSERT INTO weekly_snapshots 
+            (week_start_date, week_end_date, total_news_mentions, total_social_mentions, 
+             total_citations, total_website_sessions)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (week_start_date) 
+            DO UPDATE SET 
+                total_news_mentions = EXCLUDED.total_news_mentions,
+                total_social_mentions = EXCLUDED.total_social_mentions,
+                total_citations = EXCLUDED.total_citations,
+                total_website_sessions = EXCLUDED.total_website_sessions
+        """, (monday, sunday, news_count, social_count, citations_count, sessions_count))
+        
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        logger.info(f"Weekly snapshot updated for {monday} to {sunday}")
+        
+    except Exception as e:
+        logger.error(f"Error updating weekly snapshot: {e}")
+
+
+def run_full_ingestion():
+    """Run complete data ingestion from all sources"""
+    logger.info("=" * 60)
+    logger.info("Starting full data ingestion")
+    logger.info("=" * 60)
+    
+    try:
+        ingest_google_alerts()
+        ingest_twitter()
+        ingest_google_analytics()
+        ingest_openalex()
+        update_weekly_snapshot()
+        
+        logger.info("=" * 60)
+        logger.info("Full data ingestion completed successfully")
+        logger.info("=" * 60)
+        
+    except Exception as e:
+        logger.error(f"Error in full ingestion: {e}")
+
+
+if __name__ == "__main__":
+    run_full_ingestion()
