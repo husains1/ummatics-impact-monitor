@@ -50,7 +50,7 @@ function App() {
   const fetchData = async (endpoint, setData) => {
     setLoading(true)
     try {
-      const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+      const response = await fetch(`${API_BASE_URL}${endpoint}?t=${Date.now()}`, {
         headers: { 'Authorization': `Bearer ${token}` }
       })
       const data = await response.json()
@@ -71,11 +71,11 @@ function App() {
 
   useEffect(() => {
     if (isAuthenticated && token) {
-      if (activeTab === 'overview' && !overviewData) fetchData('/overview', setOverviewData)
-      if (activeTab === 'social' && !socialData) fetchData('/social', setSocialData)
-      if (activeTab === 'website' && !websiteData) fetchData('/website', setWebsiteData)
-      if (activeTab === 'citations' && !citationsData) fetchData('/citations', setCitationsData)
-      if (activeTab === 'news' && !newsData) fetchData('/news', setNewsData)
+      if (activeTab === 'overview') fetchData('/overview', setOverviewData)
+      if (activeTab === 'social') fetchData('/social', setSocialData)
+      if (activeTab === 'website') fetchData('/website', setWebsiteData)
+      if (activeTab === 'citations') fetchData('/citations', setCitationsData)
+      if (activeTab === 'news') fetchData('/news', setNewsData)
     }
   }, [activeTab, isAuthenticated, token])
 
@@ -217,9 +217,9 @@ function OverviewTab({ data }) {
         />
       </div>
 
-      {/* Weekly Trends Chart */}
+      {/* Weekly Trends Chart with Logarithmic Scale */}
       <div className="bg-white p-6 rounded-lg shadow">
-        <h2 className="text-xl font-semibold mb-4">12-Week Trends</h2>
+        <h2 className="text-xl font-semibold mb-4">12-Week Trends (Logarithmic Scale)</h2>
         <ResponsiveContainer width="100%" height={400}>
           <LineChart data={weekly_trends.reverse()}>
             <CartesianGrid strokeDasharray="3 3" />
@@ -227,7 +227,7 @@ function OverviewTab({ data }) {
               dataKey="week_start_date"
               tickFormatter={(date) => new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
             />
-            <YAxis />
+            <YAxis scale="log" domain={['auto', 'auto']} />
             <Tooltip />
             <Legend />
             <Line type="monotone" dataKey="total_news_mentions" stroke="#3b82f6" name="News" />
@@ -245,17 +245,41 @@ function OverviewTab({ data }) {
 function SocialTab({ data }) {
   const { platform_metrics, recent_mentions } = data
 
-  // Group metrics by platform
+  // Group metrics by platform and get latest follower count
   const platformData = {}
+  const latestFollowers = {}
+  
   platform_metrics.forEach(metric => {
     if (!platformData[metric.platform]) {
       platformData[metric.platform] = []
     }
     platformData[metric.platform].push(metric)
+    
+    // Track latest follower count (most recent week)
+    if (!latestFollowers[metric.platform] || new Date(metric.week_start_date) > new Date(latestFollowers[metric.platform].week_start_date)) {
+      latestFollowers[metric.platform] = {
+        count: metric.follower_count,
+        week_start_date: metric.week_start_date,
+        created_at: metric.created_at
+      }
+    }
   })
 
   return (
     <div className="space-y-6">
+      {/* Follower Count Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {Object.entries(latestFollowers).map(([platform, data]) => (
+          <div key={platform} className="bg-white p-6 rounded-lg shadow">
+            <h3 className="text-lg font-semibold text-gray-900 mb-2">{platform} Followers</h3>
+            <p className="text-4xl font-bold text-blue-600">{data.count.toLocaleString()}</p>
+            <p className="text-sm text-gray-500 mt-2">
+              Updated {new Date(data.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} at {new Date(data.created_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
+            </p>
+          </div>
+        ))}
+      </div>
+
       {/* Platform Metrics */}
       {Object.entries(platformData).map(([platform, metrics]) => (
         <div key={platform} className="bg-white p-6 rounded-lg shadow">
@@ -267,11 +291,13 @@ function SocialTab({ data }) {
                 dataKey="week_start_date"
                 tickFormatter={(date) => new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
               />
-              <YAxis />
+              <YAxis yAxisId="left" />
+              <YAxis yAxisId="right" orientation="right" />
               <Tooltip />
               <Legend />
-              <Line type="monotone" dataKey="mentions_count" stroke="#3b82f6" name="Mentions" />
-              <Line type="monotone" dataKey="engagement_rate" stroke="#10b981" name="Engagement Rate" />
+              <Line yAxisId="left" type="monotone" dataKey="follower_count" stroke="#3b82f6" name="Followers" />
+              <Line yAxisId="right" type="monotone" dataKey="mentions_count" stroke="#10b981" name="Mentions" />
+              <Line yAxisId="right" type="monotone" dataKey="engagement_rate" stroke="#f59e0b" name="Engagement Rate" />
             </LineChart>
           </ResponsiveContainer>
         </div>
@@ -288,10 +314,20 @@ function SocialTab({ data }) {
                   <span className="text-sm font-medium text-blue-600">{mention.platform}</span>
                   <span className="text-sm text-gray-500 ml-2">@{mention.author}</span>
                   <p className="text-gray-700 mt-1">{mention.content}</p>
+                  {mention.post_url && (
+                    <a 
+                      href={mention.post_url} 
+                      target="_blank" 
+                      rel="noopener noreferrer" 
+                      className="text-xs text-blue-600 hover:underline mt-1 inline-block"
+                    >
+                      View post
+                    </a>
+                  )}
                   <div className="flex gap-4 mt-2 text-sm text-gray-500">
-                    <span>❤️ {mention.likes}</span>
-                    <span>🔄 {mention.retweets}</span>
-                    <span>💬 {mention.replies}</span>
+                    <span>{mention.likes} likes</span>
+                    <span>{mention.retweets} retweets</span>
+                    <span>{mention.replies} replies</span>
                   </div>
                 </div>
                 <span className="text-xs text-gray-400">
@@ -392,7 +428,7 @@ function CitationsTab({ data }) {
 
       {/* Top Cited Works */}
       <div className="bg-white p-6 rounded-lg shadow">
-        <h2 className="text-xl font-semibold mb-4">Most Cited Works</h2>
+        <h2 className="text-xl font-semibold mb-4">Recently Mentioned Works</h2>
         <div className="overflow-x-auto">
           <table className="min-w-full divide-y divide-gray-200">
             <thead className="bg-gray-50">
@@ -401,6 +437,7 @@ function CitationsTab({ data }) {
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Authors</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Year</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Citations</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Most Recent Mention</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
@@ -418,6 +455,13 @@ function CitationsTab({ data }) {
                     {work.publication_date ? new Date(work.publication_date).getFullYear() : 'N/A'}
                   </td>
                   <td className="px-6 py-4 text-sm font-semibold text-gray-900">{work.cited_by_count}</td>
+                  <td className="px-6 py-4 text-sm text-gray-500">
+                    {work.publication_date ? new Date(work.publication_date).toLocaleDateString('en-US', { 
+                      year: 'numeric', 
+                      month: 'short', 
+                      day: 'numeric' 
+                    }) : 'N/A'}
+                  </td>
                 </tr>
               ))}
             </tbody>

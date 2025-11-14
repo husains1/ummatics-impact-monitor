@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 import requests
 import feedparser
 import logging
-import time
+import time  # Add time module for delays
 from google.analytics.data_v1beta import BetaAnalyticsDataClient
 from google.analytics.data_v1beta.types import (
     DateRange,
@@ -33,24 +33,13 @@ DB_CONFIG = {
 # API Configuration
 GOOGLE_ALERTS_RSS_URL = os.getenv('GOOGLE_ALERTS_RSS_URL', '')
 TWITTER_BEARER_TOKEN = os.getenv('TWITTER_BEARER_TOKEN', '')
-TWITTER_USERNAME = os.getenv('TWITTER_USERNAME', 'ummatics')  # Twitter handle to track
 GA4_PROPERTY_ID = os.getenv('GA4_PROPERTY_ID', '')
 CONTACT_EMAIL = os.getenv('CONTACT_EMAIL', 'contact@ummatics.org')
-OPENALEX_ROR_ID = os.getenv('OPENALEX_ROR_ID', '')  # Research Organization Registry ID
-
-# API retry configuration
-MAX_RETRIES = 3
-RETRY_DELAY = 2  # seconds
 
 
 def get_db_connection():
-    """Create database connection with error handling"""
-    try:
-        conn = psycopg2.connect(**DB_CONFIG)
-        return conn
-    except Exception as e:
-        logger.error(f"Database connection error: {e}")
-        raise
+    """Create database connection"""
+    return psycopg2.connect(**DB_CONFIG)
 
 
 def get_current_week_dates():
@@ -61,110 +50,31 @@ def get_current_week_dates():
     return monday, sunday
 
 
-def make_api_request(url, headers=None, params=None, max_retries=MAX_RETRIES):
-    """
-    Make API request with retry logic
-    
-    Args:
-        url: API endpoint URL
-        headers: Request headers
-        params: Query parameters
-        max_retries: Maximum number of retry attempts
-        
-    Returns:
-        Response object or None on failure
-    """
-    for attempt in range(max_retries):
-        try:
-            response = requests.get(url, headers=headers, params=params, timeout=30)
-            response.raise_for_status()
-            return response
-        except requests.exceptions.Timeout:
-            logger.warning(f"Request timeout (attempt {attempt + 1}/{max_retries})")
-            if attempt < max_retries - 1:
-                time.sleep(RETRY_DELAY * (attempt + 1))
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 429:  # Rate limit
-                logger.warning(f"Rate limited, waiting {RETRY_DELAY * 2} seconds...")
-                time.sleep(RETRY_DELAY * 2)
-            else:
-                logger.error(f"HTTP error: {e}")
-                return None
-        except Exception as e:
-            logger.error(f"Request error: {e}")
-            if attempt < max_retries - 1:
-                time.sleep(RETRY_DELAY)
-    
-    logger.error(f"Failed after {max_retries} attempts")
-    return None
-
-
 def ingest_google_alerts():
-    """
-    Fetch news mentions from Google Alerts RSS feed
-    
-    Collects:
-    - Article title
-    - URL
-    - Source
-    - Publication date
-    - Snippet/summary
-    """
+    """Fetch news mentions from Google Alerts RSS feed"""
     logger.info("Starting Google Alerts ingestion...")
     
     if not GOOGLE_ALERTS_RSS_URL:
-        logger.warning("Google Alerts RSS URL not configured. Skipping.")
+        logger.warning("Google Alerts RSS URL not configured")
         return
     
     try:
-        # Parse RSS feed
         feed = feedparser.parse(GOOGLE_ALERTS_RSS_URL)
-        
-        if not feed.entries:
-            logger.warning("No entries found in Google Alerts feed")
-            return
-        
         monday, sunday = get_current_week_dates()
         
         conn = get_db_connection()
         cur = conn.cursor()
         
         new_mentions = 0
-        duplicate_mentions = 0
-        
         for entry in feed.entries:
             try:
-                title = entry.get('title', '').strip()
-                url = entry.get('link', '').strip()
-                
-                if not title or not url:
-                    logger.warning("Entry missing title or URL, skipping")
-                    continue
-                
-                # Extract source
+                title = entry.get('title', '')
+                url = entry.get('link', '')
                 source = entry.get('source', {}).get('title', 'Unknown')
-                if not source or source == 'Unknown':
-                    # Try to extract from URL
-                    try:
-                        from urllib.parse import urlparse
-                        source = urlparse(url).netloc
-                    except:
-                        source = 'Unknown'
+                published_at = datetime(*entry.published_parsed[:6]) if hasattr(entry, 'published_parsed') else datetime.now()
+                snippet = entry.get('summary', '')[:500]
                 
-                # Parse publication date
-                if hasattr(entry, 'published_parsed') and entry.published_parsed:
-                    published_at = datetime(*entry.published_parsed[:6])
-                else:
-                    published_at = datetime.now()
-                
-                # Get snippet (limit to 500 characters)
-                snippet = entry.get('summary', '')
-                if snippet:
-                    # Remove HTML tags if present
-                    import re
-                    snippet = re.sub('<[^<]+?>', '', snippet)[:500]
-                
-                # Insert news mention with deduplication
+                # Insert news mention
                 cur.execute("""
                     INSERT INTO news_mentions (week_start_date, title, url, source, published_at, snippet)
                     VALUES (%s, %s, %s, %s, %s, %s)
@@ -173,148 +83,203 @@ def ingest_google_alerts():
                 
                 if cur.rowcount > 0:
                     new_mentions += 1
-                    logger.debug(f"Added news mention: {title[:50]}...")
-                else:
-                    duplicate_mentions += 1
                     
             except Exception as e:
-                logger.error(f"Error processing news entry '{entry.get('title', 'N/A')[:30]}...': {e}")
+                logger.error(f"Error processing news entry: {e}")
                 continue
         
         conn.commit()
         cur.close()
         conn.close()
         
-        logger.info(f"Google Alerts ingestion complete. New: {new_mentions}, Duplicates: {duplicate_mentions}")
+        logger.info(f"Google Alerts ingestion complete. New mentions: {new_mentions}")
         
     except Exception as e:
         logger.error(f"Error in Google Alerts ingestion: {e}")
 
 
-def ingest_twitter():
-    """
-    Fetch Twitter mentions and metrics
+def get_twitter_user_info(username):
+    """Fetch Twitter user information including follower count"""
+    if not TWITTER_BEARER_TOKEN:
+        return None
     
-    Collects:
-    - Mentions of Ummatics
-    - Follower count for @ummatics account
-    - Engagement metrics (likes, retweets, replies)
-    - Weekly engagement rate
-    """
+    try:
+        user_url = f"https://api.twitter.com/2/users/by/username/{username}"
+        headers = {"Authorization": f"Bearer {TWITTER_BEARER_TOKEN}"}
+        params = {"user.fields": "public_metrics"}
+        
+        response = requests.get(user_url, headers=headers, params=params)
+        
+        # Handle rate limiting gracefully
+        if response.status_code == 429:
+            logger.warning(f"Twitter API rate limit exceeded for user lookup: {username}")
+            logger.info("Rate limit will reset in ~15 minutes.")
+            return None
+        
+        response.raise_for_status()
+        data = response.json()
+        
+        if 'data' in data:
+            return data['data']
+        return None
+        
+    except Exception as e:
+        logger.error(f"Error fetching Twitter user info: {e}")
+        return None
+
+
+def ingest_twitter():
+    """Fetch Twitter mentions and metrics"""
     logger.info("Starting Twitter ingestion...")
     
     if not TWITTER_BEARER_TOKEN:
-        logger.warning("Twitter Bearer Token not configured. Skipping.")
+        logger.warning("Twitter Bearer Token not configured")
         return
     
     try:
         monday, sunday = get_current_week_dates()
+        today = datetime.now().date()
+        
+        # Check if we already have a follower count from today (cache)
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT follower_count, created_at::date 
+            FROM social_media_metrics 
+            WHERE platform = 'Twitter' 
+            AND week_start_date = %s
+        """, (monday,))
+        result = cur.fetchone()
+        
+        follower_count = 0
+        fetch_new_follower_count = True
+        
+        # If we have a record from today, reuse the cached follower count
+        if result and result[1] == today:
+            follower_count = result[0]
+            fetch_new_follower_count = False
+            logger.info(f"Using cached follower count from today: {follower_count}")
+        
+        # Get existing tweet IDs from database to avoid duplicates
+        cur.execute("""
+            SELECT post_id FROM social_mentions 
+            WHERE platform = 'Twitter'
+        """)
+        existing_tweet_ids = set(row[0] for row in cur.fetchall())
+        logger.info(f"Found {len(existing_tweet_ids)} existing tweets in database")
+        
+        cur.close()
+        conn.close()
+        
+        # Only fetch follower count if we don't have one from today
+        if fetch_new_follower_count:
+            ummatics_user = get_twitter_user_info("ummatics")
+            if ummatics_user and 'public_metrics' in ummatics_user:
+                follower_count = ummatics_user['public_metrics'].get('followers_count', 0)
+                logger.info(f"Fetched new follower count from API: {follower_count}")
+            else:
+                logger.warning("Could not fetch follower count from API, using 0 or cached value")
+                if result:
+                    follower_count = result[0]
+                    logger.info(f"Using previous follower count: {follower_count}")
+        else:
+            logger.info("Skip fetching folllower count since we have one from today...")
+        
+        # Search for mentions using multiple search terms (case-insensitive by default in Twitter API)
+        # Twitter API search is case-insensitive by default, but we'll include variations for clarity
+        search_url = "https://api.twitter.com/2/tweets/search/recent"
         headers = {"Authorization": f"Bearer {TWITTER_BEARER_TOKEN}"}
+        
+        params = {
+            "query": "(Ummatics OR ummatics OR Ummatic OR ummatic OR @ummatics) -from:ummatics",
+            "max_results": 100,
+            "tweet.fields": "created_at,public_metrics,author_id",
+            "expansions": "author_id",
+            "user.fields": "username"
+        }
+        
+        response = requests.get(search_url, headers=headers, params=params)
+        
+        # Handle rate limiting gracefully
+        if response.status_code == 429:
+            logger.warning("Twitter API rate limit exceeded. Saving follower count only.")
+            logger.info("Rate limit will reset in ~15 minutes. Mentions will be collected in next run.")
+            # Still save follower count even if we can't get mentions
+            conn = get_db_connection()
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO social_media_metrics (week_start_date, platform, follower_count, mentions_count, engagement_rate)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (week_start_date, platform) 
+                DO UPDATE SET 
+                    follower_count = EXCLUDED.follower_count
+            """, (monday, 'Twitter', follower_count, 0, 0))
+            conn.commit()
+            cur.close()
+            conn.close()
+            logger.info(f"Twitter follower count saved: {follower_count}")
+            return
+        
+        response.raise_for_status()
+        data = response.json()
         
         conn = get_db_connection()
         cur = conn.cursor()
         
-        # ========== PART 1: Get Follower Count ==========
-        follower_count = 0
-        try:
-            logger.info(f"Fetching follower count for @{TWITTER_USERNAME}...")
-            user_url = f"https://api.twitter.com/2/users/by/username/{TWITTER_USERNAME}"
-            user_params = {"user.fields": "public_metrics"}
-            
-            user_response = make_api_request(user_url, headers=headers, params=user_params)
-            
-            if user_response and user_response.status_code == 200:
-                user_data = user_response.json()
-                if 'data' in user_data and 'public_metrics' in user_data['data']:
-                    follower_count = user_data['data']['public_metrics'].get('followers_count', 0)
-                    logger.info(f"Current follower count: {follower_count:,}")
-                else:
-                    logger.warning("Could not extract follower count from response")
-            else:
-                logger.warning(f"Failed to fetch follower count for @{TWITTER_USERNAME}")
-        
-        except Exception as e:
-            logger.error(f"Error fetching Twitter follower count: {e}")
-        
-        # ========== PART 2: Search for Mentions ==========
-        logger.info("Searching for Ummatics mentions...")
-        search_url = "https://api.twitter.com/2/tweets/search/recent"
-        
-        search_params = {
-            "query": f"Ummatics OR @{TWITTER_USERNAME} -is:retweet",  # Exclude retweets
-            "max_results": 100,
-            "tweet.fields": "created_at,public_metrics,author_id",
-            "expansions": "author_id",
-            "user.fields": "username,name"
-        }
-        
-        search_response = make_api_request(search_url, headers=headers, params=search_params)
-        
         new_mentions = 0
+        skipped_duplicates = 0
+        skipped_own_posts = 0
         total_engagement = 0
         
-        if search_response and search_response.status_code == 200:
-            data = search_response.json()
+        if 'data' in data:
+            users = {user['id']: user for user in data.get('includes', {}).get('users', [])}
             
-            if 'data' in data and data['data']:
-                # Create user lookup dictionary
-                users = {}
-                if 'includes' in data and 'users' in data['includes']:
-                    users = {user['id']: user for user in data['includes']['users']}
-                
-                for tweet in data['data']:
-                    try:
-                        tweet_id = tweet['id']
-                        author_id = tweet.get('author_id', '')
-                        
-                        # Get author information
-                        author_info = users.get(author_id, {})
-                        author_username = author_info.get('username', 'Unknown')
-                        author_name = author_info.get('name', 'Unknown')
-                        
-                        content = tweet.get('text', '')
-                        post_url = f"https://twitter.com/{author_username}/status/{tweet_id}"
-                        
-                        # Parse timestamp
-                        created_at_str = tweet.get('created_at', '')
-                        if created_at_str:
-                            posted_at = datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
-                        else:
-                            posted_at = datetime.now()
-                        
-                        # Extract engagement metrics
-                        metrics = tweet.get('public_metrics', {})
-                        likes = metrics.get('like_count', 0)
-                        retweets = metrics.get('retweet_count', 0)
-                        replies = metrics.get('reply_count', 0)
-                        
-                        total_engagement += likes + retweets + replies
-                        
-                        # Insert social mention with deduplication
-                        cur.execute("""
-                            INSERT INTO social_mentions 
-                            (week_start_date, platform, post_id, author, content, post_url, posted_at, likes, retweets, replies)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                            ON CONFLICT (post_id) DO NOTHING
-                        """, (monday, 'Twitter', tweet_id, author_username, content, post_url, posted_at, likes, retweets, replies))
-                        
-                        if cur.rowcount > 0:
-                            new_mentions += 1
-                            logger.debug(f"Added mention from @{author_username}: {content[:40]}...")
-                            
-                    except Exception as e:
-                        logger.error(f"Error processing tweet {tweet.get('id', 'N/A')}: {e}")
+            for tweet in data['data']:
+                try:
+                    tweet_id = tweet['id']
+                    author_id = tweet.get('author_id', '')
+                    author_username = users.get(author_id, {}).get('username', 'Unknown')
+                    
+                    # Skip if this is a post from @ummatics itself
+                    if author_username.lower() == 'ummatics':
+                        skipped_own_posts += 1
+                        logger.debug(f"Skipping own post: {tweet_id}")
                         continue
-                
-                logger.info(f"Processed {new_mentions} new Twitter mentions")
-            else:
-                logger.info("No new Twitter mentions found")
-        else:
-            logger.warning("Failed to fetch Twitter mentions")
+                    
+                    # Skip if we already have this tweet in the database
+                    if tweet_id in existing_tweet_ids:
+                        skipped_duplicates += 1
+                        logger.debug(f"Skipping duplicate tweet: {tweet_id}")
+                        continue
+                    
+                    content = tweet.get('text', '')
+                    post_url = f"https://twitter.com/{author_username}/status/{tweet_id}"
+                    posted_at = datetime.fromisoformat(tweet['created_at'].replace('Z', '+00:00'))
+                    
+                    metrics = tweet.get('public_metrics', {})
+                    likes = metrics.get('like_count', 0)
+                    retweets = metrics.get('retweet_count', 0)
+                    replies = metrics.get('reply_count', 0)
+                    
+                    total_engagement += likes + retweets + replies
+                    
+                    # Insert social mention
+                    cur.execute("""
+                        INSERT INTO social_mentions 
+                        (week_start_date, platform, post_id, author, content, post_url, posted_at, likes, retweets, replies)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (post_id) DO NOTHING
+                    """, (monday, 'Twitter', tweet_id, author_username, content, post_url, posted_at, likes, retweets, replies))
+                    
+                    if cur.rowcount > 0:
+                        new_mentions += 1
+                        logger.info(f"Added new mention from @{author_username}: {tweet_id}")
+                        
+                except Exception as e:
+                    logger.error(f"Error processing tweet: {e}")
+                    continue
         
-        # ========== PART 3: Calculate and Store Metrics ==========
-        # Calculate average engagement rate
-        engagement_rate = round(total_engagement / max(new_mentions, 1), 2) if new_mentions > 0 else 0.0
+        engagement_rate = (total_engagement / max(new_mentions, 1)) if new_mentions > 0 else 0
         
         # Update social media metrics
         cur.execute("""
@@ -331,51 +296,40 @@ def ingest_twitter():
         cur.close()
         conn.close()
         
-        logger.info(f"Twitter ingestion complete. Followers: {follower_count:,}, Mentions: {new_mentions}, Engagement Rate: {engagement_rate}")
+        logger.info(f"Twitter ingestion complete. New mentions: {new_mentions}, Followers: {follower_count}")
+        logger.info(f"Skipped {skipped_duplicates} duplicates and {skipped_own_posts} own posts")
         
     except Exception as e:
         logger.error(f"Error in Twitter ingestion: {e}")
 
 
 def ingest_google_analytics():
-    """
-    Fetch Google Analytics 4 data
-    
-    Collects:
-    - Sessions, users, pageviews
-    - New vs returning visitors
-    - Average session duration
-    - Bounce rate
-    - Top pages
-    - Geographic distribution
-    """
+    """Fetch Google Analytics 4 data"""
     logger.info("Starting Google Analytics ingestion...")
     
     if not GA4_PROPERTY_ID:
-        logger.warning("GA4 Property ID not configured. Skipping.")
+        logger.warning("GA4 Property ID not configured")
         return
     
     try:
         # Initialize GA4 client
         credentials_path = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
-        if not credentials_path or not os.path.exists(credentials_path):
-            logger.warning("Google service account credentials not found. Skipping GA4.")
+        if credentials_path and os.path.exists(credentials_path):
+            credentials = service_account.Credentials.from_service_account_file(credentials_path)
+            client = BetaAnalyticsDataClient(credentials=credentials)
+        else:
+            logger.warning("Google service account credentials not found")
             return
-        
-        credentials = service_account.Credentials.from_service_account_file(credentials_path)
-        client = BetaAnalyticsDataClient(credentials=credentials)
         
         monday, sunday = get_current_week_dates()
         
-        # ========== PART 1: Basic Website Metrics ==========
-        logger.info("Fetching basic website metrics...")
+        # Request basic metrics
         request = RunReportRequest(
             property=f"properties/{GA4_PROPERTY_ID}",
             date_ranges=[DateRange(start_date=monday.isoformat(), end_date=sunday.isoformat())],
             metrics=[
                 Metric(name="sessions"),
                 Metric(name="totalUsers"),
-                Metric(name="newUsers"),  # NEW: Track new visitors
                 Metric(name="screenPageViews"),
                 Metric(name="averageSessionDuration"),
                 Metric(name="bounceRate"),
@@ -387,14 +341,10 @@ def ingest_google_analytics():
         if response.rows:
             row = response.rows[0]
             sessions = int(row.metric_values[0].value)
-            total_users = int(row.metric_values[1].value)
-            new_users = int(row.metric_values[2].value)  # NEW
-            pageviews = int(row.metric_values[3].value)
-            avg_duration = float(row.metric_values[4].value)
-            bounce_rate = float(row.metric_values[5].value)
-            
-            # Calculate returning users
-            returning_users = total_users - new_users
+            users = int(row.metric_values[1].value)
+            pageviews = int(row.metric_values[2].value)
+            avg_duration = float(row.metric_values[3].value)
+            bounce_rate = float(row.metric_values[4].value)
             
             conn = get_db_connection()
             cur = conn.cursor()
@@ -411,15 +361,15 @@ def ingest_google_analytics():
                     total_pageviews = EXCLUDED.total_pageviews,
                     avg_session_duration = EXCLUDED.avg_session_duration,
                     bounce_rate = EXCLUDED.bounce_rate
-            """, (monday, sessions, total_users, pageviews, avg_duration, bounce_rate))
+            """, (monday, sessions, users, pageviews, avg_duration, bounce_rate))
             
-            logger.info(f"Website metrics - Sessions: {sessions:,}, Users: {total_users:,} (New: {new_users:,}, Returning: {returning_users:,})")
-        else:
-            logger.warning("No website metrics data returned from GA4")
-            return
+            conn.commit()
+            cur.close()
+            conn.close()
+            
+            logger.info(f"Google Analytics ingestion complete. Sessions: {sessions}, Users: {users}")
         
-        # ========== PART 2: Top Pages ==========
-        logger.info("Fetching top pages...")
+        # Fetch top pages
         request_pages = RunReportRequest(
             property=f"properties/{GA4_PROPERTY_ID}",
             date_ranges=[DateRange(start_date=monday.isoformat(), end_date=sunday.isoformat())],
@@ -428,12 +378,14 @@ def ingest_google_analytics():
                 Metric(name="screenPageViews"),
                 Metric(name="averageSessionDuration"),
             ],
-            limit=20,  # Get top 20 pages
+            limit=10,
         )
         
         response_pages = client.run_report(request_pages)
         
-        pages_count = 0
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
         for row in response_pages.rows:
             page_path = row.dimension_values[0].value
             pageviews = int(row.metric_values[0].value)
@@ -447,12 +399,8 @@ def ingest_google_analytics():
                     pageviews = EXCLUDED.pageviews,
                     avg_time_on_page = EXCLUDED.avg_time_on_page
             """, (monday, page_path, pageviews, avg_time))
-            pages_count += 1
         
-        logger.info(f"Stored {pages_count} top pages")
-        
-        # ========== PART 3: Geographic Distribution ==========
-        logger.info("Fetching geographic data...")
+        # Fetch geographic data
         request_geo = RunReportRequest(
             property=f"properties/{GA4_PROPERTY_ID}",
             date_ranges=[DateRange(start_date=monday.isoformat(), end_date=sunday.isoformat())],
@@ -461,12 +409,11 @@ def ingest_google_analytics():
                 Metric(name="sessions"),
                 Metric(name="totalUsers"),
             ],
-            limit=30,  # Get top 30 countries
+            limit=20,
         )
         
         response_geo = client.run_report(request_geo)
         
-        countries_count = 0
         for row in response_geo.rows:
             country = row.dimension_values[0].value
             sessions = int(row.metric_values[0].value)
@@ -480,108 +427,77 @@ def ingest_google_analytics():
                     sessions = EXCLUDED.sessions,
                     users = EXCLUDED.users
             """, (monday, country, sessions, users))
-            countries_count += 1
-        
-        logger.info(f"Stored {countries_count} countries")
         
         conn.commit()
         cur.close()
         conn.close()
         
-        logger.info("Google Analytics ingestion complete")
-        
     except Exception as e:
         logger.error(f"Error in Google Analytics ingestion: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
 
 
 def ingest_openalex():
-    """
-    Fetch citation data from OpenAlex API
-    
-    Collects:
-    - Academic works and publications
-    - Citation counts
-    - Author information
-    - Publication dates
-    - DOI links
-    """
+    """Fetch citation data from OpenAlex API"""
     logger.info("Starting OpenAlex ingestion...")
     
     try:
+        monday, sunday = get_current_week_dates()
+        
+        # Search for works mentioning "ummatics" or "ummatic" in title, abstract, or full text
         base_url = "https://api.openalex.org/works"
         headers = {"User-Agent": f"mailto:{CONTACT_EMAIL}"}
         
-        # Determine search method
-        if OPENALEX_ROR_ID:
-            # Search by institution ROR ID
-            search_filter = f"institutions.ror:{OPENALEX_ROR_ID}"
-            logger.info(f"Searching OpenAlex by ROR ID: {OPENALEX_ROR_ID}")
-        else:
-            # Fallback: Search by organization name in affiliations
-            search_filter = "affiliations.display_name:Ummatics"
-            logger.info("Searching OpenAlex by affiliation name: Ummatics")
-            logger.warning("Consider setting OPENALEX_ROR_ID environment variable for more accurate results")
-        
+        # Search parameters - looking for mentions of ummatics or ummatic
         params = {
-            "filter": search_filter,
+            "filter": "default.search:ummatics|ummatic",
             "per_page": 200,
             "sort": "cited_by_count:desc"
         }
         
-        response = make_api_request(base_url, headers=headers, params=params)
-        
-        if not response or response.status_code != 200:
-            logger.error("Failed to fetch data from OpenAlex API")
-            return
-        
+        logger.info("Searching OpenAlex for works mentioning 'ummatics' or 'ummatic'...")
+        response = requests.get(base_url, headers=headers, params=params)
+        response.raise_for_status()
         data = response.json()
         
-        if 'results' not in data or not data['results']:
-            logger.warning("No results found in OpenAlex. Check your ROR ID or search criteria.")
-            return
-        
-        monday, sunday = get_current_week_dates()
+        works_found = len(data.get('results', []))
+        logger.info(f"Found {works_found} works in OpenAlex")
         
         conn = get_db_connection()
         cur = conn.cursor()
         
         total_citations = 0
         works_count = 0
+        new_works = 0
+        updated_works = 0
         
-        for work in data['results']:
+        for work in data.get('results', []):
             try:
-                work_id = work.get('id', '')
-                if not work_id:
-                    continue
-                
-                doi = work.get('doi', '').replace('https://doi.org/', '') if work.get('doi') else None
+                work_id = work['id']
+                doi = work.get('doi', '')
                 title = work.get('title', 'Untitled')
                 
-                # Extract authors (first 5)
+                # Extract authors
                 authors_list = work.get('authorships', [])
-                authors = ', '.join([
-                    a.get('author', {}).get('display_name', 'Unknown') 
-                    for a in authors_list[:5]
-                ])
+                authors = ', '.join([a.get('author', {}).get('display_name', '') for a in authors_list[:5]])
+                if len(authors_list) > 5:
+                    authors += ' et al.'
                 
-                # Parse publication date
-                publication_date = None
-                if work.get('publication_date'):
+                publication_date = work.get('publication_date')
+                if publication_date:
                     try:
-                        publication_date = datetime.fromisoformat(work['publication_date']).date()
+                        publication_date = datetime.fromisoformat(publication_date).date()
                     except:
-                        pass
+                        publication_date = None
                 
                 cited_by_count = work.get('cited_by_count', 0)
                 total_citations += cited_by_count
                 works_count += 1
                 
-                # Generate source URL
-                source_url = work_id  # OpenAlex IDs are URLs
-                if not source_url.startswith('http'):
-                    source_url = f"https://openalex.org/{work_id.split('/')[-1]}"
+                source_url = f"https://openalex.org/{work_id.split('/')[-1]}"
+                
+                # Check if work already exists
+                cur.execute("SELECT work_id FROM citations WHERE work_id = %s", (work_id,))
+                exists = cur.fetchone()
                 
                 # Insert or update citation
                 cur.execute("""
@@ -591,19 +507,27 @@ def ingest_openalex():
                     DO UPDATE SET 
                         cited_by_count = EXCLUDED.cited_by_count,
                         updated_at = EXCLUDED.updated_at
+                    RETURNING (xmax = 0) AS inserted
                 """, (work_id, doi, title, authors, publication_date, cited_by_count, source_url, datetime.now()))
                 
-                logger.debug(f"Processed work: {title[:50]}... (Citations: {cited_by_count})")
-                
+                result = cur.fetchone()
+                if result and result[0]:
+                    new_works += 1
+                    logger.info(f"New work added: {title[:60]}... (citations: {cited_by_count})")
+                else:
+                    updated_works += 1
+                    
             except Exception as e:
                 logger.error(f"Error processing OpenAlex work: {e}")
                 continue
         
-        # Calculate new citations this week
+        # Calculate new citations this week (simplified - compare with previous week)
         cur.execute("""
             SELECT total_citations FROM citation_metrics 
-            ORDER BY week_start_date DESC LIMIT 1
-        """)
+            WHERE week_start_date < %s
+            ORDER BY week_start_date DESC 
+            LIMIT 1
+        """, (monday,))
         result = cur.fetchone()
         previous_total = result[0] if result else 0
         new_citations = max(0, total_citations - previous_total)
@@ -623,7 +547,12 @@ def ingest_openalex():
         cur.close()
         conn.close()
         
-        logger.info(f"OpenAlex ingestion complete. Works: {works_count}, Total Citations: {total_citations:,}, New This Week: {new_citations}")
+        logger.info(f"OpenAlex ingestion complete:")
+        logger.info(f"  - Total citations: {total_citations}")
+        logger.info(f"  - Total works: {works_count}")
+        logger.info(f"  - New works: {new_works}")
+        logger.info(f"  - Updated works: {updated_works}")
+        logger.info(f"  - New citations this week: {new_citations}")
         
     except Exception as e:
         logger.error(f"Error in OpenAlex ingestion: {e}")
@@ -632,15 +561,7 @@ def ingest_openalex():
 
 
 def update_weekly_snapshot():
-    """
-    Update the weekly snapshot with aggregated data from all sources
-    
-    Consolidates:
-    - News mentions count
-    - Social mentions count
-    - Total citations
-    - Website sessions
-    """
+    """Update the weekly snapshot with aggregated data"""
     logger.info("Updating weekly snapshot...")
     
     try:
@@ -694,106 +615,30 @@ def update_weekly_snapshot():
         conn.close()
         
         logger.info(f"Weekly snapshot updated for {monday} to {sunday}")
-        logger.info(f"  News: {news_count}, Social: {social_count}, Citations: {citations_count}, Sessions: {sessions_count}")
         
     except Exception as e:
         logger.error(f"Error updating weekly snapshot: {e}")
 
 
-def validate_configuration():
-    """
-    Validate that required configuration is present
-    
-    Returns:
-        dict: Configuration status for each data source
-    """
-    logger.info("Validating configuration...")
-    
-    config_status = {
-        'google_alerts': bool(GOOGLE_ALERTS_RSS_URL),
-        'twitter': bool(TWITTER_BEARER_TOKEN),
-        'google_analytics': bool(GA4_PROPERTY_ID and os.getenv('GOOGLE_APPLICATION_CREDENTIALS')),
-        'openalex': True,  # No API key required
-        'database': True  # Assumed if we got this far
-    }
-    
-    for source, configured in config_status.items():
-        status = "✓ Configured" if configured else "✗ Not configured"
-        logger.info(f"  {source.replace('_', ' ').title()}: {status}")
-    
-    if not any(config_status.values()):
-        logger.error("No data sources are configured! Please check your environment variables.")
-        return config_status
-    
-    return config_status
-
-
 def run_full_ingestion():
-    """
-    Run complete data ingestion from all sources
-    
-    Process:
-    1. Validate configuration
-    2. Collect data from all configured sources
-    3. Update weekly aggregations
-    4. Log summary
-    """
-    logger.info("=" * 70)
-    logger.info(" " * 20 + "UMMATICS IMPACT MONITOR")
-    logger.info(" " * 22 + "Data Ingestion Process")
-    logger.info("=" * 70)
-    
-    start_time = datetime.now()
-    
-    # Validate configuration
-    config_status = validate_configuration()
+    """Run complete data ingestion from all sources"""
+    logger.info("=" * 60)
+    logger.info("Starting full data ingestion")
+    logger.info("=" * 60)
     
     try:
-        # Run ingestion for each configured source
-        logger.info("-" * 70)
-        
-        if config_status['google_alerts']:
-            ingest_google_alerts()
-        else:
-            logger.info("Skipping Google Alerts (not configured)")
-        
-        logger.info("-" * 70)
-        
-        if config_status['twitter']:
-            ingest_twitter()
-        else:
-            logger.info("Skipping Twitter (not configured)")
-        
-        logger.info("-" * 70)
-        
-        if config_status['google_analytics']:
-            ingest_google_analytics()
-        else:
-            logger.info("Skipping Google Analytics (not configured)")
-        
-        logger.info("-" * 70)
-        
-        if config_status['openalex']:
-            ingest_openalex()
-        else:
-            logger.info("Skipping OpenAlex (disabled)")
-        
-        logger.info("-" * 70)
-        
-        # Update weekly snapshot
+        ingest_google_alerts()
+        ingest_twitter()
+        ingest_google_analytics()
+        ingest_openalex()
         update_weekly_snapshot()
         
-        # Calculate duration
-        duration = datetime.now() - start_time
-        
-        logger.info("=" * 70)
-        logger.info(f"Full data ingestion completed successfully in {duration.total_seconds():.1f} seconds")
-        logger.info("=" * 70)
+        logger.info("=" * 60)
+        logger.info("Full data ingestion completed successfully")
+        logger.info("=" * 60)
         
     except Exception as e:
         logger.error(f"Error in full ingestion: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
 
 
 if __name__ == "__main__":

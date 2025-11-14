@@ -149,7 +149,8 @@ def get_social():
                 platform,
                 follower_count,
                 mentions_count,
-                engagement_rate
+                engagement_rate,
+                created_at
             FROM social_media_metrics
             ORDER BY week_start_date DESC, platform
             LIMIT 36
@@ -275,22 +276,7 @@ def get_citations():
         """)
         weekly_metrics = cur.fetchall()
         
-        # Get top cited works
-        cur.execute("""
-            SELECT 
-                title,
-                authors,
-                publication_date,
-                cited_by_count,
-                doi,
-                source_url
-            FROM citations
-            ORDER BY cited_by_count DESC
-            LIMIT 20
-        """)
-        top_works = cur.fetchall()
-        
-        # Get recent citations
+        # Get top cited works (sorted by most recent publication date)
         cur.execute("""
             SELECT 
                 title,
@@ -301,7 +287,23 @@ def get_citations():
                 source_url,
                 updated_at
             FROM citations
-            ORDER BY updated_at DESC
+            ORDER BY publication_date DESC NULLS LAST
+            LIMIT 20
+        """)
+        top_works = cur.fetchall()
+        
+        # Get recent citations (sorted by publication date, not update time)
+        cur.execute("""
+            SELECT 
+                title,
+                authors,
+                publication_date,
+                cited_by_count,
+                doi,
+                source_url,
+                updated_at
+            FROM citations
+            ORDER BY publication_date DESC NULLS LAST
             LIMIT 10
         """)
         recent_citations = cur.fetchall()

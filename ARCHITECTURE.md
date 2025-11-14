@@ -72,7 +72,7 @@
 ┌───────────────────▼─────────────────────────────────────────────────┐
 │                  SCHEDULER SERVICE (APScheduler)                     │
 │  ┌────────────────────────────────────────────────────────────┐    │
-│  │  • Runs every Monday at 9:00 AM                            │    │
+│  │  • Runs every day at 9:00 AM                            │    │
 │  │  • Triggers: run_full_ingestion()                          │    │
 │  │  • Automatic data collection from all sources              │    │
 │  └────────────────────────────────────────────────────────────┘    │
@@ -172,7 +172,7 @@
 │                         DATA FLOW CYCLE                             │
 └────────────────────────────────────────────────────────────────────┘
 
-1. COLLECTION (Weekly - Monday 9 AM)
+1. COLLECTION (Daily - 9:00 AM)
    ┌──────────────────────────────────────────────┐
    │  Scheduler triggers ingestion.py             │
    └──────────────────┬───────────────────────────┘

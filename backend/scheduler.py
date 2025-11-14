@@ -36,16 +36,25 @@ def main():
     scheduler = BlockingScheduler()
     
     # Schedule ingestion every Monday at 9:00 AM
-    scheduler.add_job(
-        scheduled_ingestion,
-        trigger=CronTrigger(day_of_week='mon', hour=9, minute=0),
-        id='weekly_ingestion',
-        name='Weekly Data Ingestion',
-        replace_existing=True
-    )
+    #scheduler.add_job(
+        #scheduled_ingestion,
+        #trigger=CronTrigger(day_of_week='mon', hour=9, minute=0),
+        #id='weekly_ingestion',
+        #name='Weekly Data Ingestion',
+        #replace_existing=True
+    #)
     
+    scheduler.add_job(
+    scheduled_ingestion,
+    trigger=CronTrigger(hour=9, minute=0),  
+    id='daily_ingestion',
+    name='Daily Data Ingestion',
+    replace_existing=True
+    )
+
     logger.info("Scheduler configured:")
-    logger.info("  - Weekly data ingestion: Every Monday at 9:00 AM")
+    #logger.info("  - Weekly data ingestion: Every Monday at 9:00 AM")
+    logger.info("  - Daily data ingestion: Every day at 9:00 AM")
     logger.info("=" * 60)
     
     # Run initial ingestion on startup
