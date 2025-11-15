@@ -5,6 +5,7 @@ import requests
 import feedparser
 import logging
 import time  # Add time module for delays
+from textblob import TextBlob
 from google.analytics.data_v1beta import BetaAnalyticsDataClient
 from google.analytics.data_v1beta.types import (
     DateRange,
@@ -48,6 +49,94 @@ def get_current_week_dates():
     monday = today - timedelta(days=today.weekday())
     sunday = monday + timedelta(days=6)
     return monday, sunday
+
+
+def analyze_sentiment(text):
+    """Wrapper that uses transformer classifier when enabled via env var, otherwise TextBlob.
+    Returns: (sentiment_label, sentiment_score)
+    - sentiment_label: 'positive', 'negative', or 'neutral'
+    - sentiment_score: model confidence or polarity (rounded)
+    """
+    try:
+        use_transformer = os.getenv('USE_TRANSFORMER', '0') in ('1', 'true', 'True')
+        if use_transformer:
+            # lazy import to avoid hard dependency when not in use
+            try:
+                from transformer_sentiment import analyze_sentiment_transformer
+                return analyze_sentiment_transformer(text)
+            except Exception as e:
+                logger.warning(f"Transformer unavailable, falling back to TextBlob: {e}")
+
+        if not text:
+            return 'neutral', 0.0
+
+        # Clean text: remove RT prefixes, urls, and trailing ellipses
+        import re
+        s = str(text)
+        s = re.sub(r"^RT\s+@\w+:\s*", '', s)
+        s = re.sub(r'http[s]?://\S+', '', s)
+        s = s.replace('…', ' ')
+        s = re.sub(r'\s+', ' ', s).strip()
+
+        blob = TextBlob(s)
+        polarity = blob.sentiment.polarity
+        if polarity > 0.1:
+            sentiment = 'positive'
+        elif polarity < -0.1:
+            sentiment = 'negative'
+        else:
+            sentiment = 'neutral'
+        return sentiment, round(polarity, 2)
+    except Exception as e:
+        logger.warning(f"Error analyzing sentiment: {e}")
+        return 'neutral', 0.0
+
+def update_sentiment_metrics(date):
+    """Update daily sentiment metrics based on analyzed tweets"""
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        # Count sentiment categories for today
+        cur.execute("""
+            SELECT 
+                COUNT(CASE WHEN sentiment = 'positive' THEN 1 END) as positive_count,
+                COUNT(CASE WHEN sentiment = 'negative' THEN 1 END) as negative_count,
+                COUNT(CASE WHEN sentiment = 'neutral' THEN 1 END) as neutral_count,
+                COUNT(CASE WHEN sentiment IS NULL THEN 1 END) as unanalyzed_count,
+                AVG(CAST(sentiment_score AS FLOAT)) as avg_score
+            FROM social_mentions 
+            WHERE platform = 'Twitter' 
+            AND DATE(posted_at) = %s
+        """, (date,))
+        
+        result = cur.fetchone()
+        positive = result[0] if result[0] else 0
+        negative = result[1] if result[1] else 0
+        neutral = result[2] if result[2] else 0
+        unanalyzed = result[3] if result[3] else 0
+        avg_score = result[4] if result[4] else 0.0
+        
+        # Insert or update sentiment metrics
+        cur.execute("""
+            INSERT INTO social_sentiment_metrics (date, platform, positive_count, negative_count, neutral_count, unanalyzed_count, average_sentiment_score)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (date, platform) 
+            DO UPDATE SET 
+                positive_count = EXCLUDED.positive_count,
+                negative_count = EXCLUDED.negative_count,
+                neutral_count = EXCLUDED.neutral_count,
+                unanalyzed_count = EXCLUDED.unanalyzed_count,
+                average_sentiment_score = EXCLUDED.average_sentiment_score
+        """, (date, 'Twitter', positive, negative, neutral, unanalyzed, avg_score))
+        
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        logger.info(f"Sentiment metrics updated for {date}: {positive} positive, {negative} negative, {neutral} neutral, {unanalyzed} unanalyzed")
+    except Exception as e:
+        logger.error(f"Error updating sentiment metrics: {e}")
 
 
 def ingest_google_alerts():
@@ -145,10 +234,10 @@ def ingest_twitter():
         cur = conn.cursor()
         cur.execute("""
             SELECT follower_count, created_at::date 
-            FROM social_media_metrics 
+            FROM social_media_daily_metrics 
             WHERE platform = 'Twitter' 
-            AND week_start_date = %s
-        """, (monday,))
+            AND date = %s
+        """, (today,))
         result = cur.fetchone()
         
         follower_count = 0
@@ -208,12 +297,12 @@ def ingest_twitter():
             conn = get_db_connection()
             cur = conn.cursor()
             cur.execute("""
-                INSERT INTO social_media_metrics (week_start_date, platform, follower_count, mentions_count, engagement_rate)
+                INSERT INTO social_media_daily_metrics (date, platform, follower_count, mentions_count, engagement_rate)
                 VALUES (%s, %s, %s, %s, %s)
-                ON CONFLICT (week_start_date, platform) 
+                ON CONFLICT (date, platform) 
                 DO UPDATE SET 
                     follower_count = EXCLUDED.follower_count
-            """, (monday, 'Twitter', follower_count, 0, 0))
+            """, (today, 'Twitter', follower_count, 0, 0))
             conn.commit()
             cur.close()
             conn.close()
@@ -263,17 +352,20 @@ def ingest_twitter():
                     
                     total_engagement += likes + retweets + replies
                     
+                    # Analyze sentiment
+                    sentiment, sentiment_score = analyze_sentiment(content)
+                    
                     # Insert social mention
                     cur.execute("""
                         INSERT INTO social_mentions 
-                        (week_start_date, platform, post_id, author, content, post_url, posted_at, likes, retweets, replies)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        (week_start_date, platform, post_id, author, content, post_url, posted_at, likes, retweets, replies, sentiment, sentiment_score, sentiment_analyzed_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT (post_id) DO NOTHING
-                    """, (monday, 'Twitter', tweet_id, author_username, content, post_url, posted_at, likes, retweets, replies))
+                    """, (monday, 'Twitter', tweet_id, author_username, content, post_url, posted_at, likes, retweets, replies, sentiment, sentiment_score, datetime.now()))
                     
                     if cur.rowcount > 0:
                         new_mentions += 1
-                        logger.info(f"Added new mention from @{author_username}: {tweet_id}")
+                        logger.info(f"Added new mention from @{author_username}: {tweet_id} (sentiment: {sentiment})")
                         
                 except Exception as e:
                     logger.error(f"Error processing tweet: {e}")
@@ -281,20 +373,23 @@ def ingest_twitter():
         
         engagement_rate = (total_engagement / max(new_mentions, 1)) if new_mentions > 0 else 0
         
-        # Update social media metrics
+        # Update social media daily metrics
         cur.execute("""
-            INSERT INTO social_media_metrics (week_start_date, platform, follower_count, mentions_count, engagement_rate)
+            INSERT INTO social_media_daily_metrics (date, platform, follower_count, mentions_count, engagement_rate)
             VALUES (%s, %s, %s, %s, %s)
-            ON CONFLICT (week_start_date, platform) 
+            ON CONFLICT (date, platform) 
             DO UPDATE SET 
                 follower_count = EXCLUDED.follower_count,
                 mentions_count = EXCLUDED.mentions_count,
                 engagement_rate = EXCLUDED.engagement_rate
-        """, (monday, 'Twitter', follower_count, new_mentions, engagement_rate))
+        """, (today, 'Twitter', follower_count, new_mentions, engagement_rate))
         
         conn.commit()
         cur.close()
         conn.close()
+        
+        # Update sentiment metrics for today
+        update_sentiment_metrics(today)
         
         logger.info(f"Twitter ingestion complete. New mentions: {new_mentions}, Followers: {follower_count}")
         logger.info(f"Skipped {skipped_duplicates} duplicates and {skipped_own_posts} own posts")

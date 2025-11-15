@@ -18,6 +18,7 @@ function App() {
   // Data states
   const [overviewData, setOverviewData] = useState(null)
   const [socialData, setSocialData] = useState(null)
+  const [sentimentData, setSentimentData] = useState(null)
   const [websiteData, setWebsiteData] = useState(null)
   const [citationsData, setCitationsData] = useState(null)
   const [newsData, setNewsData] = useState(null)
@@ -73,6 +74,7 @@ function App() {
     if (isAuthenticated && token) {
       if (activeTab === 'overview') fetchData('/overview', setOverviewData)
       if (activeTab === 'social') fetchData('/social', setSocialData)
+      if (activeTab === 'social') fetchData('/sentiment', setSentimentData)
       if (activeTab === 'website') fetchData('/website', setWebsiteData)
       if (activeTab === 'citations') fetchData('/citations', setCitationsData)
       if (activeTab === 'news') fetchData('/news', setNewsData)
@@ -171,7 +173,7 @@ function App() {
           <OverviewTab data={overviewData} />
         )}
         {!loading && activeTab === 'social' && socialData && (
-          <SocialTab data={socialData} />
+          <SocialTab data={socialData} sentimentData={sentimentData} />
         )}
         {!loading && activeTab === 'website' && websiteData && (
           <WebsiteTab data={websiteData} />
@@ -242,28 +244,67 @@ function OverviewTab({ data }) {
 }
 
 // Social Tab Component
-function SocialTab({ data }) {
+function SocialTab({ data, sentimentData }) {
   const { platform_metrics, recent_mentions } = data
 
-  // Group metrics by platform and get latest follower count
+  // Group metrics by platform and get latest follower count.
+  // Normalize date fields (daily data may use `date` instead of `week_start_date`).
   const platformData = {}
   const latestFollowers = {}
-  
-  platform_metrics.forEach(metric => {
+
+  platform_metrics.forEach(metricRaw => {
+    const metric = { ...metricRaw, _date: metricRaw.date || metricRaw.week_start_date || metricRaw.week_start }
+
     if (!platformData[metric.platform]) {
       platformData[metric.platform] = []
     }
     platformData[metric.platform].push(metric)
-    
-    // Track latest follower count (most recent week)
-    if (!latestFollowers[metric.platform] || new Date(metric.week_start_date) > new Date(latestFollowers[metric.platform].week_start_date)) {
+
+    // Track latest follower count (most recent date)
+    const existing = latestFollowers[metric.platform]
+    if (!existing || new Date(metric._date) > new Date(existing._date)) {
       latestFollowers[metric.platform] = {
         count: metric.follower_count,
-        week_start_date: metric.week_start_date,
-        created_at: metric.created_at
+        _date: metric._date,
+        created_at: metric.created_at || metric.posted_at || metric._date
       }
     }
   })
+
+  // Merge sentiment info into recent_mentions when available
+  let enhancedRecent = recent_mentions || []
+  let sentimentSeriesFromMentions = null
+  if (sentimentData) {
+    // If sentimentData has per-mention list, index by post_url
+    const categorized = Array.isArray(sentimentData.categorized_mentions) ? sentimentData.categorized_mentions : (Array.isArray(sentimentData) ? sentimentData : null)
+    const byUrl = {}
+    if (categorized) {
+      categorized.forEach(m => {
+        if (m.post_url) byUrl[m.post_url] = m
+      })
+
+      // compute daily aggregates from categorized mentions if daily_metrics not present
+      const dailyMap = {}
+      categorized.forEach(m => {
+        const date = m.posted_at ? (new Date(m.posted_at)).toISOString().slice(0,10) : null
+        const score = m.sentiment_score !== undefined && m.sentiment_score !== null ? parseFloat(m.sentiment_score) : null
+        if (!date || score === null || isNaN(score)) return
+        if (!dailyMap[date]) dailyMap[date] = { sum: 0, count: 0 }
+        dailyMap[date].sum += score
+        dailyMap[date].count += 1
+      })
+      const series = Object.entries(dailyMap).map(([date, v]) => ({ date, average_sentiment_score: v.sum / v.count }))
+      sentimentSeriesFromMentions = series.sort((a,b) => new Date(a.date) - new Date(b.date))
+    }
+
+    // Merge into recent mentions by post_url
+    enhancedRecent = (recent_mentions || []).map(m => {
+      if (m.post_url && byUrl[m.post_url]) {
+        return { ...m, sentiment: byUrl[m.post_url].sentiment, sentiment_score: byUrl[m.post_url].sentiment_score }
+      }
+      return m
+    })
+  }
 
   return (
     <div className="space-y-6">
@@ -279,6 +320,48 @@ function SocialTab({ data }) {
           </div>
         ))}
       </div>
+
+      {/* Sentiment Trend (daily averages) */}
+      {sentimentData && (() => {
+        // Determine which key contains an array of daily metrics (be defensive about the shape)
+        let raw = []
+        if (Array.isArray(sentimentData)) raw = sentimentData
+        else if (Array.isArray(sentimentData.daily_metrics)) raw = sentimentData.daily_metrics
+        else if (Array.isArray(sentimentData.metrics)) raw = sentimentData.metrics
+
+        // If we don't have daily metrics but we computed a series from categorized mentions, use that
+        if ((!Array.isArray(raw) || raw.length === 0) && Array.isArray(sentimentSeriesFromMentions) && sentimentSeriesFromMentions.length) {
+          raw = sentimentSeriesFromMentions.map(x => ({ date: x.date, average_sentiment_score: x.average_sentiment_score }))
+        }
+
+        if (!Array.isArray(raw) || raw.length === 0) return null
+
+        const sentimentSeries = raw.map(item => ({
+          _date: item.date || item.week_start_date || item._date,
+          avg_sentiment: (item.average_sentiment_score ?? item.avg_score ?? item.avg_sentiment ?? item.average_score)
+        })).filter(s => s._date && (s.avg_sentiment !== undefined && s.avg_sentiment !== null)).slice().reverse()
+
+        if (!sentimentSeries.length) return null
+
+        return (
+          <div className="bg-white p-6 rounded-lg shadow">
+            <h2 className="text-xl font-semibold mb-4">Average Sentiment (Daily)</h2>
+            <ResponsiveContainer width="100%" height={200}>
+              <LineChart data={sentimentSeries}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis
+                  dataKey="_date"
+                  tickFormatter={(date) => new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                />
+                <YAxis domain={['auto', 'auto']} />
+                <Tooltip />
+                <Legend />
+                <Line type="monotone" dataKey="avg_sentiment" stroke="#ef4444" name="Avg Sentiment" />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        )
+      })()}
 
       {/* Platform Metrics */}
       {Object.entries(platformData).map(([platform, metrics]) => (
@@ -307,35 +390,56 @@ function SocialTab({ data }) {
       <div className="bg-white p-6 rounded-lg shadow">
         <h2 className="text-xl font-semibold mb-4">Recent Mentions</h2>
         <div className="space-y-4">
-          {recent_mentions.slice(0, 20).map((mention, idx) => (
-            <div key={idx} className="border-b pb-4 last:border-b-0">
-              <div className="flex justify-between items-start">
-                <div className="flex-1">
-                  <span className="text-sm font-medium text-blue-600">{mention.platform}</span>
-                  <span className="text-sm text-gray-500 ml-2">@{mention.author}</span>
-                  <p className="text-gray-700 mt-1">{mention.content}</p>
-                  {mention.post_url && (
-                    <a 
-                      href={mention.post_url} 
-                      target="_blank" 
-                      rel="noopener noreferrer" 
-                      className="text-xs text-blue-600 hover:underline mt-1 inline-block"
-                    >
-                      View post
-                    </a>
-                  )}
-                  <div className="flex gap-4 mt-2 text-sm text-gray-500">
-                    <span>{mention.likes} likes</span>
-                    <span>{mention.retweets} retweets</span>
-                    <span>{mention.replies} replies</span>
+          {enhancedRecent.slice(0, 20).map((mention, idx) => {
+            const rawScore = mention.sentiment_score ?? mention.score ?? null
+            const score = rawScore !== null && rawScore !== undefined ? parseFloat(rawScore) : null
+            let sentimentLabel = mention.sentiment
+            if (!sentimentLabel && typeof score === 'number' && !isNaN(score)) {
+              if (score > 0.1) sentimentLabel = 'positive'
+              else if (score < -0.1) sentimentLabel = 'negative'
+              else sentimentLabel = 'neutral'
+            }
+
+            const badgeColor = sentimentLabel === 'positive' ? 'bg-green-100 text-green-700' : sentimentLabel === 'negative' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'
+
+            return (
+              <div key={idx} className="border-b pb-4 last:border-b-0">
+                <div className="flex justify-between items-start">
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium text-blue-600">{mention.platform}</span>
+                      <span className="text-sm text-gray-500">@{mention.author}</span>
+                      {sentimentLabel && (
+                        <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${badgeColor} ml-3`}>{sentimentLabel}</span>
+                      )}
+                    </div>
+                    <p className="text-gray-700 mt-1">{mention.content}</p>
+                    {mention.post_url && (
+                      <a 
+                        href={mention.post_url} 
+                        target="_blank" 
+                        rel="noopener noreferrer" 
+                        className="text-xs text-blue-600 hover:underline mt-1 inline-block"
+                      >
+                        View post
+                      </a>
+                    )}
+                    <div className="flex gap-4 mt-2 text-sm text-gray-500">
+                      <span>{mention.likes} likes</span>
+                      <span>{mention.retweets} retweets</span>
+                      <span>{mention.replies} replies</span>
+                      {typeof score === 'number' && (
+                        <span>score: {score.toFixed(2)}</span>
+                      )}
+                    </div>
                   </div>
+                  <span className="text-xs text-gray-400">
+                    {mention.posted_at ? new Date(mention.posted_at).toLocaleDateString() : (mention.created_at ? new Date(mention.created_at).toLocaleDateString() : '')}
+                  </span>
                 </div>
-                <span className="text-xs text-gray-400">
-                  {new Date(mention.posted_at).toLocaleDateString()}
-                </span>
               </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
       </div>
     </div>

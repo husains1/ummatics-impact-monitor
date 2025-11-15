@@ -142,18 +142,18 @@ def get_social():
         conn = get_db_connection()
         cur = conn.cursor(cursor_factory=RealDictCursor)
         
-        # Get last 12 weeks of platform metrics
+        # Get last 60 days of platform metrics (daily data)
         cur.execute("""
             SELECT 
-                week_start_date,
+                date as week_start_date,
                 platform,
                 follower_count,
                 mentions_count,
                 engagement_rate,
                 created_at
-            FROM social_media_metrics
-            ORDER BY week_start_date DESC, platform
-            LIMIT 36
+            FROM social_media_daily_metrics
+            ORDER BY date DESC, platform
+            LIMIT 180
         """)
         platform_metrics = cur.fetchall()
         
@@ -168,7 +168,9 @@ def get_social():
                 posted_at,
                 likes,
                 retweets,
-                replies
+                replies,
+                sentiment,
+                sentiment_score
             FROM social_mentions
             WHERE week_start_date >= %s
             ORDER BY posted_at DESC
@@ -186,6 +188,65 @@ def get_social():
         
     except Exception as e:
         logger.error(f"Error fetching social data: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/sentiment', methods=['GET'])
+@require_auth
+def get_sentiment():
+    """Get sentiment analysis data for social mentions"""
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        
+        # Get sentiment metrics for last 30 days
+        cur.execute("""
+            SELECT 
+                date,
+                platform,
+                positive_count,
+                negative_count,
+                neutral_count,
+                unanalyzed_count,
+                average_sentiment_score,
+                created_at
+            FROM social_sentiment_metrics
+            WHERE platform = 'Twitter'
+            ORDER BY date DESC
+            LIMIT 30
+        """)
+        sentiment_metrics = cur.fetchall()
+        
+        # Get sentiment-categorized recent mentions
+        cur.execute("""
+            SELECT 
+                author,
+                content,
+                post_url,
+                posted_at,
+                sentiment,
+                sentiment_score,
+                likes,
+                retweets,
+                replies
+            FROM social_mentions 
+            WHERE platform = 'Twitter'
+            AND sentiment IS NOT NULL
+            ORDER BY posted_at DESC
+            LIMIT 50
+        """)
+        categorized_mentions = cur.fetchall()
+        
+        cur.close()
+        conn.close()
+        
+        return jsonify({
+            'sentiment_metrics': [dict(row) for row in sentiment_metrics],
+            'categorized_mentions': [dict(row) for row in categorized_mentions]
+        })
+        
+    except Exception as e:
+        logger.error(f"Error fetching sentiment data: {e}")
         return jsonify({'error': str(e)}), 500
 
 
