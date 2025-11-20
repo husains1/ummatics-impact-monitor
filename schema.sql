@@ -12,7 +12,7 @@ CREATE TABLE weekly_snapshots (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Social media platform metrics
+-- Social media platform metrics (weekly)
 CREATE TABLE social_media_metrics (
     id SERIAL PRIMARY KEY,
     week_start_date DATE NOT NULL,
@@ -22,6 +22,32 @@ CREATE TABLE social_media_metrics (
     engagement_rate DECIMAL(5, 2) DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(week_start_date, platform)
+);
+
+-- Social media platform metrics (daily)
+CREATE TABLE IF NOT EXISTS social_media_daily_metrics (
+    id SERIAL PRIMARY KEY,
+    date DATE NOT NULL,
+    platform VARCHAR(50) NOT NULL,
+    follower_count INTEGER DEFAULT 0,
+    mentions_count INTEGER DEFAULT 0,
+    engagement_rate DECIMAL(5, 2) DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(date, platform)
+);
+
+-- Social media sentiment metrics (daily)
+CREATE TABLE IF NOT EXISTS social_sentiment_metrics (
+    id SERIAL PRIMARY KEY,
+    date DATE NOT NULL,
+    platform VARCHAR(50) NOT NULL,
+    positive_count INTEGER DEFAULT 0,
+    negative_count INTEGER DEFAULT 0,
+    neutral_count INTEGER DEFAULT 0,
+    unanalyzed_count INTEGER DEFAULT 0,
+    average_sentiment_score DECIMAL(5, 2) DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(date, platform)
 );
 
 -- Individual social media mentions
@@ -37,6 +63,9 @@ CREATE TABLE social_mentions (
     likes INTEGER DEFAULT 0,
     retweets INTEGER DEFAULT 0,
     replies INTEGER DEFAULT 0,
+    sentiment VARCHAR(20),
+    sentiment_score DECIMAL(5, 2),
+    sentiment_analyzed_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 

@@ -52,7 +52,6 @@ scripts/migrate_local_to_ec2_db.sh
 scripts/package-lock.json
 scripts/social_debug.png
 .gitignore
-REDDIT_IMPLEMENTATION_PLAN.md
 .gitignore
 backend/precompute_sentiment.py
 scripts/headless_check.js
@@ -60,7 +59,4 @@ scripts/headless_check.js
 scripts/headless_screenshot.js
 scripts/headless_screenshot_local.js
 scripts/social_tab_screenshot_local.png
-REDDIT_PERMISSIONS_SETUP.md
 .gitignore
-REDDIT_ARCHITECTURE.md
-REDDIT_ACTION_PLAN.md

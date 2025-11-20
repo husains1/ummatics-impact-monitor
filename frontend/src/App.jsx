@@ -223,7 +223,7 @@ function OverviewTab({ data }) {
       <div className="bg-white p-6 rounded-lg shadow">
         <h2 className="text-xl font-semibold mb-4">12-Week Trends (Logarithmic Scale)</h2>
         <ResponsiveContainer width="100%" height={400}>
-          <LineChart data={weekly_trends.reverse()}>
+          <LineChart data={weekly_trends.sort((a, b) => new Date(a.week_start_date) - new Date(b.week_start_date))}>
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis
               dataKey="week_start_date"
@@ -339,7 +339,7 @@ function SocialTab({ data, sentimentData }) {
         const sentimentSeries = raw.map(item => ({
           _date: item.date || item.week_start_date || item._date,
           avg_sentiment: (item.average_sentiment_score ?? item.avg_score ?? item.avg_sentiment ?? item.average_score)
-        })).filter(s => s._date && (s.avg_sentiment !== undefined && s.avg_sentiment !== null)).slice().reverse()
+        })).filter(s => s._date && (s.avg_sentiment !== undefined && s.avg_sentiment !== null)).slice()
 
         if (!sentimentSeries.length) return null
 
@@ -347,7 +347,7 @@ function SocialTab({ data, sentimentData }) {
           <div className="bg-white p-6 rounded-lg shadow">
             <h2 className="text-xl font-semibold mb-4">Average Sentiment (Daily)</h2>
             <ResponsiveContainer width="100%" height={200}>
-              <LineChart data={sentimentSeries}>
+              <LineChart data={sentimentSeries.sort((a, b) => new Date(a._date) - new Date(b._date))}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis
                   dataKey="_date"
@@ -368,7 +368,7 @@ function SocialTab({ data, sentimentData }) {
         <div key={platform} className="bg-white p-6 rounded-lg shadow">
           <h2 className="text-xl font-semibold mb-4">{platform} Metrics</h2>
           <ResponsiveContainer width="100%" height={300}>
-            <LineChart data={metrics.reverse()}>
+            <LineChart data={metrics.sort((a, b) => new Date(a._date) - new Date(b._date))}>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis
                 dataKey="week_start_date"
@@ -515,7 +515,7 @@ function CitationsTab({ data }) {
       <div className="bg-white p-6 rounded-lg shadow">
         <h2 className="text-xl font-semibold mb-4">Citation Growth</h2>
         <ResponsiveContainer width="100%" height={400}>
-          <LineChart data={weekly_metrics.reverse()}>
+          <LineChart data={weekly_metrics.sort((a, b) => new Date(a.week_start_date) - new Date(b.week_start_date))}>
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis
               dataKey="week_start_date"
@@ -584,9 +584,9 @@ function NewsTab({ data }) {
     <div className="space-y-6">
       {/* Weekly News Mentions Chart */}
       <div className="bg-white p-6 rounded-lg shadow">
-        <h2 className="text-xl font-semibold mb-4">News Mentions by Week</h2>
+        <h2 className="text-xl font-semibold mb-4\">News Mentions by Week</h2>
         <ResponsiveContainer width="100%" height={300}>
-          <BarChart data={weekly_counts.reverse()}>
+          <BarChart data={weekly_counts.sort((a, b) => new Date(a.week_start_date) - new Date(b.week_start_date))}>
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis
               dataKey="week_start_date"
@@ -603,7 +603,7 @@ function NewsTab({ data }) {
       <div className="bg-white p-6 rounded-lg shadow">
         <h2 className="text-xl font-semibold mb-4">Recent News Mentions</h2>
         <div className="space-y-4">
-          {news_mentions.map((mention, idx) => (
+          {news_mentions.sort((a, b) => new Date(b.published_at) - new Date(a.published_at)).map((mention, idx) => (
             <div key={idx} className="border-b pb-4 last:border-b-0">
               <div className="flex justify-between items-start">
                 <div className="flex-1">
