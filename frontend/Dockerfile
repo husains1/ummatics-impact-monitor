@@ -1,18 +1,23 @@
-FROM node:18-alpine
+FROM node:18-alpine AS build
 
 WORKDIR /app
 
-# Copy package files
+# copy package files and install dependencies
 COPY package*.json ./
+RUN npm ci --no-audit --no-fund
 
-# Install dependencies
-RUN npm install
-
-# Copy application code
+# copy source and build
 COPY . .
+RUN npm run build
 
-# Expose port
-EXPOSE 3000
+FROM nginx:stable-alpine
 
-# Start development server
-CMD ["npm", "run", "dev"]
+# remove default nginx content
+RUN rm -rf /usr/share/nginx/html/*
+
+# copy built static assets from builder
+COPY --from=build /app/dist /usr/share/nginx/html
+
+EXPOSE 80
+
+CMD ["nginx", "-g", "daemon off;"]
