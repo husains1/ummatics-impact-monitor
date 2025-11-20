@@ -54,6 +54,21 @@ function App() {
       const response = await fetch(`${API_BASE_URL}${endpoint}?t=${Date.now()}`, {
         headers: { 'Authorization': `Bearer ${token}` }
       })
+
+      if (!response.ok) {
+        // Handle unauthorized access by returning to login
+        if (response.status === 401) {
+          setAuthError('Session expired or unauthorized. Please login.')
+          setIsAuthenticated(false)
+          setToken('')
+          localStorage.removeItem('auth_token')
+        } else {
+          console.error(`API ${endpoint} returned status ${response.status}`)
+        }
+        setLoading(false)
+        return
+      }
+
       const data = await response.json()
       setData(data)
     } catch (error) {
@@ -191,7 +206,15 @@ function App() {
 
 // Overview Tab Component
 function OverviewTab({ data }) {
-  const { current_week, weekly_trends } = data
+  // Be defensive against incomplete API responses
+  const current_week = (data && data.current_week) ? data.current_week : {
+    news_mentions: 0,
+    social_mentions: 0,
+    citations: 0,
+    website_sessions: 0
+  }
+
+  const weekly_trends = (data && data.weekly_trends) ? data.weekly_trends : []
 
   return (
     <div className="space-y-6">
