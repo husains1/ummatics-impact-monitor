@@ -48,6 +48,9 @@ Thumbs.db
 logs/
 .env.aws.example
 deployment-info.txt
+
+# Documentation (temporary)
+REDDIT*.md
 scripts/migrate_local_to_ec2_db.sh
 scripts/package-lock.json
 scripts/social_debug.png
