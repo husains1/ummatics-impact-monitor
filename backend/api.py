@@ -157,26 +157,49 @@ def get_social():
         """)
         platform_metrics = cur.fetchall()
         
-        # Get recent mentions (last 4 weeks)
-        four_weeks_ago = (datetime.now() - timedelta(weeks=4)).date()
-        cur.execute("""
-            SELECT 
-                platform,
-                author,
-                content,
-                post_url,
-                posted_at,
-                likes,
-                retweets,
-                replies,
-                sentiment,
-                sentiment_score
-            FROM social_mentions
-            WHERE week_start_date >= %s
-            ORDER BY posted_at DESC
-            LIMIT 100
-        """, (four_weeks_ago,))
-        recent_mentions = cur.fetchall()
+        # Allow frontend to request historic mentions when needed
+        historic = request.args.get('historic', '0') in ('1', 'true', 'True')
+
+        if historic:
+            # Return latest N mentions regardless of week (historic view)
+            cur.execute("""
+                SELECT
+                    platform,
+                    author,
+                    content,
+                    post_url,
+                    posted_at,
+                    likes,
+                    retweets,
+                    replies,
+                    sentiment,
+                    sentiment_score
+                FROM social_mentions
+                ORDER BY posted_at DESC
+                LIMIT 200
+            """)
+            recent_mentions = cur.fetchall()
+        else:
+            # Default: recent mentions (last 4 weeks)
+            four_weeks_ago = (datetime.now() - timedelta(weeks=4)).date()
+            cur.execute("""
+                SELECT 
+                    platform,
+                    author,
+                    content,
+                    post_url,
+                    posted_at,
+                    likes,
+                    retweets,
+                    replies,
+                    sentiment,
+                    sentiment_score
+                FROM social_mentions
+                WHERE week_start_date >= %s
+                ORDER BY posted_at DESC
+                LIMIT 100
+            """, (four_weeks_ago,))
+            recent_mentions = cur.fetchall()
         
         cur.close()
         conn.close()

@@ -8,6 +8,8 @@ import sys
 # Add parent directory to path to import ingestion module
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from ingestion import run_full_ingestion
+from ingestion import update_sentiment_metrics
+from datetime import date, timedelta
 
 # Configure logging
 logging.basicConfig(
@@ -60,6 +62,27 @@ def main():
     # Run initial ingestion on startup
     logger.info("Running initial data ingestion...")
     scheduled_ingestion()
+    # Run initial sentiment update for recent days
+    def scheduled_sentiment():
+        try:
+            logger.info("Starting scheduled sentiment update for recent days...")
+            today = datetime.now().date()
+            # update sentiment metrics for the last 7 days (inclusive)
+            for i in range(0, 7):
+                d = today - timedelta(days=i)
+                update_sentiment_metrics(d)
+            logger.info("Scheduled sentiment update completed")
+        except Exception as e:
+            logger.error(f"Error in scheduled sentiment update: {e}")
+
+    # Schedule daily sentiment update at 09:30 (shortly after ingestion)
+    scheduler.add_job(
+        scheduled_sentiment,
+        trigger=CronTrigger(hour=9, minute=30),
+        id='daily_sentiment',
+        name='Daily Sentiment Update',
+        replace_existing=True
+    )
     
     try:
         logger.info("Scheduler is now running. Press Ctrl+C to exit.")

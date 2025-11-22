@@ -96,6 +96,28 @@ function App() {
     }
   }, [activeTab, isAuthenticated, token])
 
+  // If social data has no recent mentions, try fetching historical mentions
+  useEffect(() => {
+    if (isAuthenticated && token && activeTab === 'social' && socialData) {
+      const recent = (socialData && socialData.recent_mentions) ? socialData.recent_mentions : []
+      if (Array.isArray(recent) && recent.length === 0) {
+        // fetch historic mentions and overwrite socialData if found
+        (async () => {
+          try {
+            const resp = await fetch(`${API_BASE_URL}/social?historic=1&t=${Date.now()}`, { headers: { 'Authorization': `Bearer ${token}` } })
+            if (!resp.ok) return
+            const historic = await resp.json()
+            if (historic && Array.isArray(historic.recent_mentions) && historic.recent_mentions.length > 0) {
+              setSocialData(historic)
+            }
+          } catch (e) {
+            console.error('Historic social fetch error', e)
+          }
+        })()
+      }
+    }
+  }, [socialData, activeTab, isAuthenticated, token])
+
   if (!isAuthenticated) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center">
