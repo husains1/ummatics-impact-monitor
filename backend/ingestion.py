@@ -3,6 +3,7 @@ import psycopg2
 from datetime import datetime, timedelta
 import requests
 import feedparser
+import urllib.request
 import logging
 import time  # Add time module for delays
 from textblob import TextBlob
@@ -219,7 +220,10 @@ def ingest_reddit():
             try:
                 logger.info(f"Fetching Reddit RSS feed: {rss_url}")
                 # Reddit requires User-Agent header to return RSS/XML instead of HTML
-                feed = feedparser.parse(rss_url, agent='Mozilla/5.0 (compatible; UmmaticsBot/1.0)')
+                req = urllib.request.Request(rss_url, headers={'User-Agent': 'Mozilla/5.0 (compatible; UmmaticsBot/1.0)'})
+                response = urllib.request.urlopen(req)
+                content = response.read()
+                feed = feedparser.parse(content)
 
                 for entry in feed.entries:
                     try:
