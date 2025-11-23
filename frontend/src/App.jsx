@@ -416,7 +416,7 @@ function SocialTab({ data, sentimentData }) {
             <LineChart data={metrics.sort((a, b) => new Date(a._date) - new Date(b._date))}>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis
-                dataKey="week_start_date"
+                dataKey="_date"
                 tickFormatter={(date) => new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
               />
               <YAxis yAxisId="left" />
