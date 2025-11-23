@@ -219,10 +219,7 @@ def ingest_reddit():
             try:
                 logger.info(f"Fetching Reddit RSS feed: {rss_url}")
                 # Reddit requires User-Agent header to return RSS/XML instead of HTML
-                import urllib.request
-                headers = {'User-Agent': 'Mozilla/5.0 (compatible; UmmaticsBot/1.0)'}
-                request = urllib.request.Request(rss_url, headers=headers)
-                feed = feedparser.parse(request)
+                feed = feedparser.parse(rss_url, agent='Mozilla/5.0 (compatible; UmmaticsBot/1.0)')
 
                 for entry in feed.entries:
                     try:
