@@ -83,7 +83,7 @@ services:
     image: 182758038500.dkr.ecr.us-east-1.amazonaws.com/ummatics-impact-monitor:frontend-latest
     container_name: ummatics_frontend
     ports:
-      - "3000:3000"
+      - "3000:80"
     depends_on:
       - api
     networks:
