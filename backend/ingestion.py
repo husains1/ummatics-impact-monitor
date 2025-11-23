@@ -33,6 +33,7 @@ DB_CONFIG = {
 
 # API Configuration
 GOOGLE_ALERTS_RSS_URL = os.getenv('GOOGLE_ALERTS_RSS_URL', '')
+REDDIT_RSS_URLS = os.getenv('REDDIT_RSS_URLS', '').split(',') if os.getenv('REDDIT_RSS_URLS') else []
 TWITTER_BEARER_TOKEN = os.getenv('TWITTER_BEARER_TOKEN', '')
 GA4_PROPERTY_ID = os.getenv('GA4_PROPERTY_ID', '')
 CONTACT_EMAIL = os.getenv('CONTACT_EMAIL', 'contact@ummatics.org')
@@ -91,52 +92,57 @@ def analyze_sentiment(text):
         logger.warning(f"Error analyzing sentiment: {e}")
         return 'neutral', 0.0
 
-def update_sentiment_metrics(date):
-    """Update daily sentiment metrics based on analyzed tweets"""
+def update_sentiment_metrics(date, platform='Twitter'):
+    """Update daily sentiment metrics based on analyzed social mentions
+
+    Args:
+        date: The date to update metrics for
+        platform: The social platform to update ('Twitter', 'Reddit', etc.)
+    """
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        
-        # Count sentiment categories for today
+
+        # Count sentiment categories for the specified date and platform
         cur.execute("""
-            SELECT 
+            SELECT
                 COUNT(CASE WHEN sentiment = 'positive' THEN 1 END) as positive_count,
                 COUNT(CASE WHEN sentiment = 'negative' THEN 1 END) as negative_count,
                 COUNT(CASE WHEN sentiment = 'neutral' THEN 1 END) as neutral_count,
                 COUNT(CASE WHEN sentiment IS NULL THEN 1 END) as unanalyzed_count,
                 AVG(CAST(sentiment_score AS FLOAT)) as avg_score
-            FROM social_mentions 
-            WHERE platform = 'Twitter' 
+            FROM social_mentions
+            WHERE platform = %s
             AND DATE(posted_at) = %s
-        """, (date,))
-        
+        """, (platform, date))
+
         result = cur.fetchone()
         positive = result[0] if result[0] else 0
         negative = result[1] if result[1] else 0
         neutral = result[2] if result[2] else 0
         unanalyzed = result[3] if result[3] else 0
         avg_score = result[4] if result[4] else 0.0
-        
+
         # Insert or update sentiment metrics
         cur.execute("""
             INSERT INTO social_sentiment_metrics (date, platform, positive_count, negative_count, neutral_count, unanalyzed_count, average_sentiment_score)
             VALUES (%s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (date, platform) 
-            DO UPDATE SET 
+            ON CONFLICT (date, platform)
+            DO UPDATE SET
                 positive_count = EXCLUDED.positive_count,
                 negative_count = EXCLUDED.negative_count,
                 neutral_count = EXCLUDED.neutral_count,
                 unanalyzed_count = EXCLUDED.unanalyzed_count,
                 average_sentiment_score = EXCLUDED.average_sentiment_score
-        """, (date, 'Twitter', positive, negative, neutral, unanalyzed, avg_score))
-        
+        """, (date, platform, positive, negative, neutral, unanalyzed, avg_score))
+
         conn.commit()
         cur.close()
         conn.close()
-        
-        logger.info(f"Sentiment metrics updated for {date}: {positive} positive, {negative} negative, {neutral} neutral, {unanalyzed} unanalyzed")
+
+        logger.info(f"Sentiment metrics updated for {platform} on {date}: {positive} positive, {negative} negative, {neutral} neutral, {unanalyzed} unanalyzed")
     except Exception as e:
-        logger.error(f"Error updating sentiment metrics: {e}")
+        logger.error(f"Error updating sentiment metrics for {platform}: {e}")
 
 
 def ingest_google_alerts():
@@ -185,6 +191,109 @@ def ingest_google_alerts():
         
     except Exception as e:
         logger.error(f"Error in Google Alerts ingestion: {e}")
+
+
+def ingest_reddit():
+    """Fetch Reddit mentions from RSS feeds"""
+    logger.info("Starting Reddit ingestion...")
+
+    if not REDDIT_RSS_URLS or len(REDDIT_RSS_URLS) == 0:
+        logger.warning("Reddit RSS URLs not configured")
+        return
+
+    try:
+        monday, sunday = get_current_week_dates()
+        today = datetime.now().date()
+
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        total_new_mentions = 0
+        total_mentions_today = 0
+
+        for rss_url in REDDIT_RSS_URLS:
+            rss_url = rss_url.strip()
+            if not rss_url:
+                continue
+
+            try:
+                logger.info(f"Fetching Reddit RSS feed: {rss_url}")
+                feed = feedparser.parse(rss_url)
+
+                for entry in feed.entries:
+                    try:
+                        # Extract Reddit post details
+                        post_id = entry.get('id', '')
+                        if not post_id:
+                            continue
+
+                        # Reddit RSS feeds provide different fields
+                        title = entry.get('title', '')
+                        author = entry.get('author', 'Unknown')
+                        post_url = entry.get('link', '')
+                        content = entry.get('summary', '')[:1000]  # Limit content length
+
+                        # Parse published date
+                        if hasattr(entry, 'published_parsed') and entry.published_parsed:
+                            posted_at = datetime(*entry.published_parsed[:6])
+                        else:
+                            posted_at = datetime.now()
+
+                        # Reddit RSS doesn't provide engagement metrics, so we set them to 0
+                        # In the future, you could scrape these or use an API
+                        upvotes = 0
+                        comments = 0
+
+                        # Analyze sentiment
+                        sentiment_text = f"{title} {content}"
+                        sentiment, sentiment_score = analyze_sentiment(sentiment_text)
+
+                        # Insert Reddit mention
+                        cur.execute("""
+                            INSERT INTO social_mentions
+                            (week_start_date, platform, post_id, author, content, post_url, posted_at,
+                             likes, retweets, replies, sentiment, sentiment_score, sentiment_analyzed_at)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            ON CONFLICT (post_id) DO NOTHING
+                        """, (monday, 'Reddit', post_id, author, content, post_url, posted_at,
+                              upvotes, 0, comments, sentiment, sentiment_score, datetime.now()))
+
+                        if cur.rowcount > 0:
+                            total_new_mentions += 1
+                            if posted_at.date() == today:
+                                total_mentions_today += 1
+
+                    except Exception as e:
+                        logger.error(f"Error processing Reddit entry: {e}")
+                        continue
+
+            except Exception as e:
+                logger.error(f"Error fetching Reddit RSS feed {rss_url}: {e}")
+                continue
+
+        # Update daily metrics for Reddit
+        if total_mentions_today > 0:
+            cur.execute("""
+                INSERT INTO social_media_daily_metrics (date, platform, follower_count, mentions_count, engagement_rate)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (date, platform)
+                DO UPDATE SET
+                    mentions_count = EXCLUDED.mentions_count,
+                    engagement_rate = EXCLUDED.engagement_rate
+            """, (today, 'Reddit', 0, total_mentions_today, 0.0))
+
+        # Update sentiment metrics for Reddit
+        if total_new_mentions > 0:
+            update_sentiment_metrics(today, 'Reddit')
+
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        logger.info(f"Reddit ingestion complete. New mentions: {total_new_mentions}")
+
+    except Exception as e:
+        logger.error(f"Error in Reddit ingestion: {e}")
 
 
 def get_twitter_user_info(username):
@@ -720,18 +829,19 @@ def run_full_ingestion():
     logger.info("=" * 60)
     logger.info("Starting full data ingestion")
     logger.info("=" * 60)
-    
+
     try:
         ingest_google_alerts()
+        ingest_reddit()
         ingest_twitter()
         ingest_google_analytics()
         ingest_openalex()
         update_weekly_snapshot()
-        
+
         logger.info("=" * 60)
         logger.info("Full data ingestion completed successfully")
         logger.info("=" * 60)
-        
+
     except Exception as e:
         logger.error(f"Error in full ingestion: {e}")
 

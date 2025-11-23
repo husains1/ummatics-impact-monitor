@@ -222,9 +222,9 @@ def get_sentiment():
         conn = get_db_connection()
         cur = conn.cursor(cursor_factory=RealDictCursor)
         
-        # Get sentiment metrics for last 30 days
+        # Get sentiment metrics for last 30 days (all platforms)
         cur.execute("""
-            SELECT 
+            SELECT
                 date,
                 platform,
                 positive_count,
@@ -234,9 +234,8 @@ def get_sentiment():
                 average_sentiment_score,
                 created_at
             FROM social_sentiment_metrics
-            WHERE platform = 'Twitter'
-            ORDER BY date DESC
-            LIMIT 30
+            ORDER BY date DESC, platform
+            LIMIT 90
         """)
         sentiment_metrics = cur.fetchall()
         
