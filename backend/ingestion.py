@@ -93,6 +93,36 @@ def analyze_sentiment(text):
         logger.warning(f"Error analyzing sentiment: {e}")
         return 'neutral', 0.0
 
+def analyze_sentiment_textblob(text):
+    """Analyze sentiment using TextBlob only (faster, for Reddit posts).
+    Returns: (sentiment_label, sentiment_score)
+    """
+    try:
+        if not text:
+            return 'neutral', 0.0
+
+        # Clean text
+        import re
+        s = str(text)
+        s = re.sub(r"^RT\s+@\w+:\s*", '', s)
+        s = re.sub(r'http[s]?://\S+', '', s)
+        s = s.replace('…', ' ')
+        s = re.sub(r'\s+', ' ', s).strip()
+
+        blob = TextBlob(s)
+        polarity = blob.sentiment.polarity
+        if polarity > 0.1:
+            sentiment = 'positive'
+        elif polarity < -0.1:
+            sentiment = 'negative'
+        else:
+            sentiment = 'neutral'
+        return sentiment, round(polarity, 2)
+    except Exception as e:
+        logger.warning(f"Error analyzing sentiment with TextBlob: {e}")
+        return 'neutral', 0.0
+
+
 def update_sentiment_metrics(date, platform='Twitter'):
     """Update daily sentiment metrics based on analyzed social mentions
 
@@ -212,20 +242,22 @@ def ingest_reddit():
         total_new_mentions = 0
         total_mentions_today = 0
 
-        for rss_url in REDDIT_RSS_URLS:
+        for feed_index, rss_url in enumerate(REDDIT_RSS_URLS):
             rss_url = rss_url.strip()
             if not rss_url:
                 continue
 
             try:
-                logger.info(f"Fetching Reddit RSS feed: {rss_url}")
+                logger.info(f"Fetching Reddit RSS feed {feed_index + 1}/{len(REDDIT_RSS_URLS)}: {rss_url}")
                 # Reddit requires User-Agent header to return RSS/XML instead of HTML
                 req = urllib.request.Request(rss_url, headers={'User-Agent': 'Mozilla/5.0 (compatible; UmmaticsBot/1.0)'})
                 response = urllib.request.urlopen(req)
                 content = response.read()
                 feed = feedparser.parse(content)
 
-                for entry in feed.entries:
+                logger.info(f"Found {len(feed.entries)} entries in feed")
+
+                for entry_index, entry in enumerate(feed.entries):
                     try:
                         # Extract Reddit post details
                         post_id = entry.get('id', '')
@@ -249,9 +281,13 @@ def ingest_reddit():
                         upvotes = 0
                         comments = 0
 
-                        # Analyze sentiment
+                        # Analyze sentiment using TextBlob (fast) instead of transformer (slow)
                         sentiment_text = f"{title} {content}"
-                        sentiment, sentiment_score = analyze_sentiment(sentiment_text)
+                        sentiment, sentiment_score = analyze_sentiment_textblob(sentiment_text)
+
+                        # Add small delay every 5 posts to avoid overloading
+                        if (entry_index + 1) % 5 == 0:
+                            time.sleep(0.5)  # 500ms delay
 
                         # Insert Reddit mention
                         cur.execute("""
@@ -271,6 +307,13 @@ def ingest_reddit():
                     except Exception as e:
                         logger.error(f"Error processing Reddit entry: {e}")
                         continue
+
+                # Log progress
+                logger.info(f"Processed {len(feed.entries)} entries from {rss_url}")
+
+                # Add delay between feeds to avoid rate limiting
+                if feed_index < len(REDDIT_RSS_URLS) - 1:
+                    time.sleep(2)  # 2 second delay between feeds
 
             except Exception as e:
                 logger.error(f"Error fetching Reddit RSS feed {rss_url}: {e}")
