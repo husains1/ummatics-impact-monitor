@@ -15,6 +15,9 @@ FROM nginx:stable-alpine
 # remove default nginx content
 RUN rm -rf /usr/share/nginx/html/*
 
+# copy custom nginx configuration
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+
 # copy built static assets from builder
 COPY --from=build /app/dist /usr/share/nginx/html
 
