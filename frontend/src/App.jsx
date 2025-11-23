@@ -371,6 +371,7 @@ function SocialTab({ data, sentimentData }) {
         // Determine which key contains an array of daily metrics (be defensive about the shape)
         let raw = []
         if (Array.isArray(sentimentData)) raw = sentimentData
+        else if (Array.isArray(sentimentData.sentiment_metrics)) raw = sentimentData.sentiment_metrics
         else if (Array.isArray(sentimentData.daily_metrics)) raw = sentimentData.daily_metrics
         else if (Array.isArray(sentimentData.metrics)) raw = sentimentData.metrics
 
@@ -420,12 +421,12 @@ function SocialTab({ data, sentimentData }) {
                 tickFormatter={(date) => new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
               />
               <YAxis yAxisId="left" />
-              <YAxis yAxisId="right" orientation="right" />
+              <YAxis yAxisId="right" orientation="right" domain={[0, 'auto']} />
               <Tooltip />
               <Legend />
-              <Line yAxisId="left" type="monotone" dataKey="follower_count" stroke="#3b82f6" name="Followers" />
-              <Line yAxisId="right" type="monotone" dataKey="mentions_count" stroke="#10b981" name="Mentions" />
-              <Line yAxisId="right" type="monotone" dataKey="engagement_rate" stroke="#f59e0b" name="Engagement Rate" />
+              <Line yAxisId="left" type="monotone" dataKey="follower_count" stroke="#3b82f6" name="Followers" strokeWidth={2} />
+              <Line yAxisId="right" type="monotone" dataKey="mentions_count" stroke="#10b981" name="Mentions" strokeWidth={2} />
+              <Line yAxisId="right" type="monotone" dataKey="engagement_rate" stroke="#f59e0b" name="Engagement Rate" strokeWidth={2} />
             </LineChart>
           </ResponsiveContainer>
         </div>
