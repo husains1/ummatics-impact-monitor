@@ -140,6 +140,16 @@ CREATE TABLE news_mentions (
     UNIQUE(url, title)
 );
 
+-- Discovered subreddits for automated monitoring
+CREATE TABLE IF NOT EXISTS discovered_subreddits (
+    id SERIAL PRIMARY KEY,
+    subreddit_name VARCHAR(255) UNIQUE NOT NULL,
+    discovered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    is_active BOOLEAN DEFAULT TRUE,
+    last_checked TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Create indexes for better query performance
 CREATE INDEX idx_weekly_snapshots_date ON weekly_snapshots(week_start_date);
 CREATE INDEX idx_social_media_metrics_date ON social_media_metrics(week_start_date);

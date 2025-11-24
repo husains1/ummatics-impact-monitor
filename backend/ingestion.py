@@ -4,8 +4,11 @@ from datetime import datetime, timedelta
 import requests
 import feedparser
 import urllib.request
+import urllib.parse
 import logging
 import time  # Add time module for delays
+import re
+import json
 from textblob import TextBlob
 from google.analytics.data_v1beta import BetaAnalyticsDataClient
 from google.analytics.data_v1beta.types import (
@@ -222,6 +225,86 @@ def ingest_google_alerts():
         
     except Exception as e:
         logger.error(f"Error in Google Alerts ingestion: {e}")
+
+
+def discover_new_subreddits():
+    """
+    Search for new subreddits mentioning 'ummatics' or 'ummatic' using Google search.
+    Returns a list of newly discovered subreddit names.
+    """
+    logger.info("Starting subreddit discovery...")
+
+    discovered_subreddits = set()
+    keywords = ['ummatics', 'ummatic']
+
+    try:
+        for keyword in keywords:
+            # Use Google search to find Reddit posts mentioning the keyword
+            search_query = f"{keyword} site:reddit.com/r/"
+            search_url = f"https://www.google.com/search?q={urllib.parse.quote(search_query)}"
+
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+
+            try:
+                response = requests.get(search_url, headers=headers, timeout=10)
+                if response.status_code == 200:
+                    # Extract subreddit names from URLs in search results
+                    # Pattern: reddit.com/r/SUBREDDITNAME
+                    pattern = r'reddit\.com/r/([a-zA-Z0-9_]+)'
+                    matches = re.findall(pattern, response.text)
+
+                    for subreddit in matches:
+                        # Skip common meta subreddits
+                        if subreddit.lower() not in ['all', 'popular', 'announcements']:
+                            discovered_subreddits.add(subreddit.lower())
+                            logger.info(f"Discovered subreddit: r/{subreddit}")
+
+                time.sleep(2)  # Delay between searches
+
+            except Exception as e:
+                logger.error(f"Error searching for keyword '{keyword}': {e}")
+                continue
+
+        # Get current subreddits from environment
+        current_urls = os.getenv('REDDIT_RSS_URLS', '').split(',')
+        current_subreddits = set()
+        for url in current_urls:
+            match = re.search(r'/r/([a-zA-Z0-9_]+)/', url)
+            if match:
+                current_subreddits.add(match.group(1).lower())
+
+        # Find new subreddits not already being monitored
+        new_subreddits = discovered_subreddits - current_subreddits
+
+        if new_subreddits:
+            logger.info(f"Found {len(new_subreddits)} new subreddits: {', '.join(new_subreddits)}")
+
+            # Save discovered subreddits to database
+            conn = get_db_connection()
+            cur = conn.cursor()
+            for subreddit in new_subreddits:
+                try:
+                    cur.execute("""
+                        INSERT INTO discovered_subreddits (subreddit_name, is_active)
+                        VALUES (%s, %s)
+                        ON CONFLICT (subreddit_name) DO UPDATE SET
+                            last_checked = CURRENT_TIMESTAMP
+                    """, (subreddit, True))
+                except Exception as e:
+                    logger.error(f"Error saving subreddit {subreddit}: {e}")
+            conn.commit()
+            cur.close()
+            conn.close()
+        else:
+            logger.info("No new subreddits discovered")
+
+        return list(new_subreddits)
+
+    except Exception as e:
+        logger.error(f"Error in subreddit discovery: {e}")
+        return []
 
 
 def ingest_reddit():
@@ -877,6 +960,52 @@ def update_weekly_snapshot():
         logger.error(f"Error updating weekly snapshot: {e}")
 
 
+def update_reddit_rss_urls(new_subreddits):
+    """
+    Update REDDIT_RSS_URLS environment variable with new subreddits.
+    This updates the .env file to persist the changes.
+    """
+    if not new_subreddits:
+        return
+
+    logger.info(f"Updating REDDIT_RSS_URLS with {len(new_subreddits)} new subreddits")
+
+    try:
+        # Read current .env file
+        env_file = '/app/.env'
+        if not os.path.exists(env_file):
+            logger.warning(f".env file not found at {env_file}")
+            return
+
+        with open(env_file, 'r') as f:
+            lines = f.readlines()
+
+        # Find and update REDDIT_RSS_URLS line
+        updated = False
+        for i, line in enumerate(lines):
+            if line.startswith('REDDIT_RSS_URLS='):
+                current_value = line.split('=', 1)[1].strip()
+                # Add new subreddits
+                new_urls = [f"https://www.reddit.com/r/{sub}/.rss" for sub in new_subreddits]
+                if current_value:
+                    updated_value = f"{current_value},{','.join(new_urls)}"
+                else:
+                    updated_value = ','.join(new_urls)
+                lines[i] = f"REDDIT_RSS_URLS={updated_value}\n"
+                updated = True
+                break
+
+        if updated:
+            with open(env_file, 'w') as f:
+                f.writelines(lines)
+            logger.info("Successfully updated .env file with new subreddits")
+        else:
+            logger.warning("REDDIT_RSS_URLS not found in .env file")
+
+    except Exception as e:
+        logger.error(f"Error updating .env file: {e}")
+
+
 def run_full_ingestion():
     """Run complete data ingestion from all sources"""
     logger.info("=" * 60)
@@ -884,6 +1013,12 @@ def run_full_ingestion():
     logger.info("=" * 60)
 
     try:
+        # Discover new subreddits first
+        new_subreddits = discover_new_subreddits()
+        if new_subreddits:
+            update_reddit_rss_urls(new_subreddits)
+            # Note: New subreddits will be used in next run after container restart
+
         ingest_google_alerts()
         ingest_reddit()
         ingest_twitter()
