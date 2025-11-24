@@ -230,6 +230,7 @@ def ingest_google_alerts():
 def discover_new_subreddits():
     """
     Search for new subreddits mentioning 'ummatics' or 'ummatic' using Reddit's search RSS.
+    Uses both sitewide search and targeted searches within specific subreddits.
     Returns a list of newly discovered subreddit names.
     """
     logger.info("Starting subreddit discovery via Reddit search RSS...")
@@ -237,14 +238,13 @@ def discover_new_subreddits():
     discovered_subreddits = set()
 
     try:
-        # Use Reddit's sitewide search RSS feed
+        # Strategy 1: Sitewide search
         # This searches ALL of Reddit for posts containing the keywords
         search_query = "ummatic OR ummatics"
         search_url = f"https://www.reddit.com/search.rss?q={urllib.parse.quote(search_query)}"
 
-        logger.info(f"Fetching Reddit search RSS: {search_url}")
+        logger.info(f"Fetching Reddit sitewide search RSS: {search_url}")
 
-        # Fetch the RSS feed with proper headers
         req = urllib.request.Request(
             search_url,
             headers={'User-Agent': 'Mozilla/5.0 (compatible; UmmaticsBot/1.0; +http://ummatics.org)'}
@@ -253,30 +253,57 @@ def discover_new_subreddits():
         with urllib.request.urlopen(req, timeout=30) as response:
             feed_content = response.read()
 
-        # Parse the RSS feed
         feed = feedparser.parse(feed_content)
-
-        logger.info(f"Found {len(feed.entries)} search results from Reddit")
+        logger.info(f"Found {len(feed.entries)} results from sitewide search")
 
         # Extract subreddit names from the post links
         for entry in feed.entries:
             try:
-                # Reddit RSS search results include the post URL in entry.link
-                # Format: https://www.reddit.com/r/SUBREDDITNAME/comments/...
                 link = entry.get('link', '')
-
-                # Extract subreddit name from URL
                 match = re.search(r'reddit\.com/r/([a-zA-Z0-9_]+)/', link)
                 if match:
                     subreddit = match.group(1).lower()
-
-                    # Skip common meta subreddits
                     if subreddit not in ['all', 'popular', 'announcements', 'reddit']:
                         discovered_subreddits.add(subreddit)
-                        logger.info(f"Discovered subreddit from search: r/{subreddit}")
-
+                        logger.info(f"Discovered subreddit from sitewide search: r/{subreddit}")
             except Exception as e:
                 logger.error(f"Error processing search result: {e}")
+                continue
+
+        # Strategy 2: Search within specific Islamic/Muslim subreddits
+        # Reddit's sitewide search may miss older posts, so we also search within
+        # specific subreddits where relevant content is likely to appear
+        target_subreddits = [
+            'islam', 'Muslim', 'MuslimLounge', 'progressive_islam',
+            'PanIslamistPosting', 'islamichistory', 'converts',
+            'pakistan', 'egypt', 'turkey', 'indonesia', 'malaysia',
+            'saudiarabia', 'arabs', 'MiddleEastNews'
+        ]
+
+        for subreddit in target_subreddits:
+            try:
+                targeted_query = f"{search_query} subreddit:{subreddit}"
+                targeted_url = f"https://www.reddit.com/search.rss?q={urllib.parse.quote(targeted_query)}"
+
+                logger.info(f"Searching within r/{subreddit}...")
+
+                req = urllib.request.Request(
+                    targeted_url,
+                    headers={'User-Agent': 'Mozilla/5.0 (compatible; UmmaticsBot/1.0; +http://ummatics.org)'}
+                )
+
+                with urllib.request.urlopen(req, timeout=30) as response:
+                    feed_content = response.read()
+
+                feed = feedparser.parse(feed_content)
+
+                if len(feed.entries) > 0:
+                    logger.info(f"  Found {len(feed.entries)} results in r/{subreddit}")
+                    # If we find results in this subreddit, add it to discovered list
+                    discovered_subreddits.add(subreddit.lower())
+
+            except Exception as e:
+                logger.error(f"Error searching r/{subreddit}: {e}")
                 continue
 
         # Get current subreddits from environment
