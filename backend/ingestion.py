@@ -229,42 +229,54 @@ def ingest_google_alerts():
 
 def discover_new_subreddits():
     """
-    Search for new subreddits mentioning 'ummatics' or 'ummatic' using Google search.
+    Search for new subreddits mentioning 'ummatics' or 'ummatic' using Reddit's search RSS.
     Returns a list of newly discovered subreddit names.
     """
-    logger.info("Starting subreddit discovery...")
+    logger.info("Starting subreddit discovery via Reddit search RSS...")
 
     discovered_subreddits = set()
-    keywords = ['ummatics', 'ummatic']
 
     try:
-        for keyword in keywords:
-            # Use Google search to find Reddit posts mentioning the keyword
-            search_query = f"{keyword} site:reddit.com/r/"
-            search_url = f"https://www.google.com/search?q={urllib.parse.quote(search_query)}"
+        # Use Reddit's sitewide search RSS feed
+        # This searches ALL of Reddit for posts containing the keywords
+        search_query = "ummatic OR ummatics"
+        search_url = f"https://www.reddit.com/search.rss?q={urllib.parse.quote(search_query)}"
 
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
+        logger.info(f"Fetching Reddit search RSS: {search_url}")
 
+        # Fetch the RSS feed with proper headers
+        req = urllib.request.Request(
+            search_url,
+            headers={'User-Agent': 'Mozilla/5.0 (compatible; UmmaticsBot/1.0; +http://ummatics.org)'}
+        )
+
+        with urllib.request.urlopen(req, timeout=30) as response:
+            feed_content = response.read()
+
+        # Parse the RSS feed
+        feed = feedparser.parse(feed_content)
+
+        logger.info(f"Found {len(feed.entries)} search results from Reddit")
+
+        # Extract subreddit names from the post links
+        for entry in feed.entries:
             try:
-                response = requests.get(search_url, headers=headers, timeout=10)
-                if response.status_code == 200:
-                    # Extract subreddit names from URLs in search results
-                    # Pattern: reddit.com/r/SUBREDDITNAME
-                    pattern = r'reddit\.com/r/([a-zA-Z0-9_]+)'
-                    matches = re.findall(pattern, response.text)
+                # Reddit RSS search results include the post URL in entry.link
+                # Format: https://www.reddit.com/r/SUBREDDITNAME/comments/...
+                link = entry.get('link', '')
 
-                    for subreddit in matches:
-                        # Skip common meta subreddits
-                        if subreddit.lower() not in ['all', 'popular', 'announcements']:
-                            discovered_subreddits.add(subreddit.lower())
-                            logger.info(f"Discovered subreddit: r/{subreddit}")
+                # Extract subreddit name from URL
+                match = re.search(r'reddit\.com/r/([a-zA-Z0-9_]+)/', link)
+                if match:
+                    subreddit = match.group(1).lower()
 
-                time.sleep(2)  # Delay between searches
+                    # Skip common meta subreddits
+                    if subreddit not in ['all', 'popular', 'announcements', 'reddit']:
+                        discovered_subreddits.add(subreddit)
+                        logger.info(f"Discovered subreddit from search: r/{subreddit}")
 
             except Exception as e:
-                logger.error(f"Error searching for keyword '{keyword}': {e}")
+                logger.error(f"Error processing search result: {e}")
                 continue
 
         # Get current subreddits from environment
@@ -300,6 +312,7 @@ def discover_new_subreddits():
         else:
             logger.info("No new subreddits discovered")
 
+        logger.info(f"Subreddit discovery complete. Total discovered: {len(discovered_subreddits)}, New: {len(new_subreddits)}")
         return list(new_subreddits)
 
     except Exception as e:
