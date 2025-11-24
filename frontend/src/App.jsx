@@ -19,6 +19,8 @@ function App() {
   const [overviewData, setOverviewData] = useState(null)
   const [socialData, setSocialData] = useState(null)
   const [sentimentData, setSentimentData] = useState(null)
+  const [redditData, setRedditData] = useState(null)
+  const [redditSentimentData, setRedditSentimentData] = useState(null)
   const [websiteData, setWebsiteData] = useState(null)
   const [citationsData, setCitationsData] = useState(null)
   const [newsData, setNewsData] = useState(null)
@@ -88,17 +90,23 @@ function App() {
   useEffect(() => {
     if (isAuthenticated && token) {
       if (activeTab === 'overview') fetchData('/overview', setOverviewData)
-      if (activeTab === 'social') fetchData('/social', setSocialData)
-      if (activeTab === 'social') fetchData('/sentiment', setSentimentData)
+      if (activeTab === 'twitter') {
+        fetchData('/social', setSocialData)
+        fetchData('/sentiment', setSentimentData)
+      }
+      if (activeTab === 'reddit') {
+        fetchData('/social', setRedditData)
+        fetchData('/sentiment', setRedditSentimentData)
+      }
       if (activeTab === 'website') fetchData('/website', setWebsiteData)
       if (activeTab === 'citations') fetchData('/citations', setCitationsData)
       if (activeTab === 'news') fetchData('/news', setNewsData)
     }
   }, [activeTab, isAuthenticated, token])
 
-  // If social data has no recent mentions, try fetching historical mentions
+  // If twitter data has no recent mentions, try fetching historical mentions
   useEffect(() => {
-    if (isAuthenticated && token && activeTab === 'social' && socialData) {
+    if (isAuthenticated && token && activeTab === 'twitter' && socialData) {
       const recent = (socialData && socialData.recent_mentions) ? socialData.recent_mentions : []
       if (Array.isArray(recent) && recent.length === 0) {
         // fetch historic mentions and overwrite socialData if found
@@ -117,6 +125,28 @@ function App() {
       }
     }
   }, [socialData, activeTab, isAuthenticated, token])
+
+  // If reddit data has no recent mentions, try fetching historical mentions
+  useEffect(() => {
+    if (isAuthenticated && token && activeTab === 'reddit' && redditData) {
+      const recent = (redditData && redditData.recent_mentions) ? redditData.recent_mentions : []
+      if (Array.isArray(recent) && recent.length === 0) {
+        // fetch historic mentions and overwrite redditData if found
+        (async () => {
+          try {
+            const resp = await fetch(`${API_BASE_URL}/social?historic=1&t=${Date.now()}`, { headers: { 'Authorization': `Bearer ${token}` } })
+            if (!resp.ok) return
+            const historic = await resp.json()
+            if (historic && Array.isArray(historic.recent_mentions) && historic.recent_mentions.length > 0) {
+              setRedditData(historic)
+            }
+          } catch (e) {
+            console.error('Historic reddit fetch error', e)
+          }
+        })()
+      }
+    }
+  }, [redditData, activeTab, isAuthenticated, token])
 
   if (!isAuthenticated) {
     return (
@@ -181,7 +211,7 @@ function App() {
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-6">
         <div className="border-b border-gray-200">
           <nav className="-mb-px flex space-x-8">
-            {['overview', 'social', 'website', 'citations', 'news'].map((tab) => (
+            {['overview', 'twitter', 'reddit', 'website', 'citations', 'news'].map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
@@ -209,8 +239,11 @@ function App() {
         {!loading && activeTab === 'overview' && overviewData && (
           <OverviewTab data={overviewData} />
         )}
-        {!loading && activeTab === 'social' && socialData && (
-          <SocialTab data={socialData} sentimentData={sentimentData} />
+        {!loading && activeTab === 'twitter' && socialData && (
+          <TwitterTab data={socialData} sentimentData={sentimentData} />
+        )}
+        {!loading && activeTab === 'reddit' && redditData && (
+          <RedditTab data={redditData} sentimentData={redditSentimentData} />
         )}
         {!loading && activeTab === 'website' && websiteData && (
           <WebsiteTab data={websiteData} />
@@ -288,16 +321,20 @@ function OverviewTab({ data }) {
   )
 }
 
-// Social Tab Component
-function SocialTab({ data, sentimentData }) {
+// Twitter Tab Component
+function TwitterTab({ data, sentimentData }) {
   const { platform_metrics, recent_mentions } = data
+
+  // Filter for Twitter only
+  const twitterMetrics = platform_metrics.filter(m => m.platform === 'Twitter')
+  const twitterMentions = recent_mentions.filter(m => m.platform === 'Twitter')
 
   // Group metrics by platform and get latest follower count.
   // Normalize date fields (daily data may use `date` instead of `week_start_date`).
   const platformData = {}
   const latestFollowers = {}
 
-  platform_metrics.forEach(metricRaw => {
+  twitterMetrics.forEach(metricRaw => {
     const metric = { ...metricRaw, _date: metricRaw.date || metricRaw.week_start_date || metricRaw.week_start }
 
     if (!platformData[metric.platform]) {
@@ -343,7 +380,7 @@ function SocialTab({ data, sentimentData }) {
     }
 
     // Merge into recent mentions by post_url
-    enhancedRecent = (recent_mentions || []).map(m => {
+    enhancedRecent = (twitterMentions || []).map(m => {
       if (m.post_url && byUrl[m.post_url]) {
         return { ...m, sentiment: byUrl[m.post_url].sentiment, sentiment_score: byUrl[m.post_url].sentiment_score }
       }
@@ -474,6 +511,215 @@ function SocialTab({ data, sentimentData }) {
                       <span>{mention.likes} likes</span>
                       <span>{mention.retweets} retweets</span>
                       <span>{mention.replies} replies</span>
+                      {typeof score === 'number' && (
+                        <span>score: {score.toFixed(2)}</span>
+                      )}
+                    </div>
+                  </div>
+                  <span className="text-xs text-gray-400">
+                    {mention.posted_at ? new Date(mention.posted_at).toLocaleDateString() : (mention.created_at ? new Date(mention.created_at).toLocaleDateString() : '')}
+                  </span>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Reddit Tab Component
+function RedditTab({ data, sentimentData }) {
+  const { platform_metrics, recent_mentions } = data
+
+  // Filter for Reddit only
+  const redditMetrics = platform_metrics.filter(m => m.platform === 'Reddit')
+  const redditMentions = recent_mentions.filter(m => m.platform === 'Reddit')
+
+  // Group metrics by platform and get latest follower count.
+  // Normalize date fields (daily data may use `date` instead of `week_start_date`).
+  const platformData = {}
+  const latestFollowers = {}
+
+  redditMetrics.forEach(metricRaw => {
+    const metric = { ...metricRaw, _date: metricRaw.date || metricRaw.week_start_date || metricRaw.week_start }
+
+    if (!platformData[metric.platform]) {
+      platformData[metric.platform] = []
+    }
+    platformData[metric.platform].push(metric)
+
+    // Track latest follower count (most recent date)
+    const existing = latestFollowers[metric.platform]
+    if (!existing || new Date(metric._date) > new Date(existing._date)) {
+      latestFollowers[metric.platform] = {
+        count: metric.follower_count,
+        _date: metric._date,
+        created_at: metric.created_at || metric.posted_at || metric._date
+      }
+    }
+  })
+
+  // Merge sentiment info into recent_mentions when available
+  let enhancedRecent = redditMentions || []
+  let sentimentSeriesFromMentions = null
+  if (sentimentData) {
+    // If sentimentData has per-mention list, index by post_url
+    const categorized = Array.isArray(sentimentData.categorized_mentions) ? sentimentData.categorized_mentions : (Array.isArray(sentimentData) ? sentimentData : null)
+    const byUrl = {}
+    if (categorized) {
+      categorized.forEach(m => {
+        if (m.post_url) byUrl[m.post_url] = m
+      })
+
+      // compute daily aggregates from categorized mentions if daily_metrics not present
+      const dailyMap = {}
+      categorized.forEach(m => {
+        const date = m.posted_at ? (new Date(m.posted_at)).toISOString().slice(0,10) : null
+        const score = m.sentiment_score !== undefined && m.sentiment_score !== null ? parseFloat(m.sentiment_score) : null
+        if (!date || score === null || isNaN(score)) return
+        if (!dailyMap[date]) dailyMap[date] = { sum: 0, count: 0 }
+        dailyMap[date].sum += score
+        dailyMap[date].count += 1
+      })
+      const series = Object.entries(dailyMap).map(([date, v]) => ({ date, average_sentiment_score: v.sum / v.count }))
+      sentimentSeriesFromMentions = series.sort((a,b) => new Date(a.date) - new Date(b.date))
+    }
+
+    // Merge into recent mentions by post_url
+    enhancedRecent = (redditMentions || []).map(m => {
+      if (m.post_url && byUrl[m.post_url]) {
+        return { ...m, sentiment: byUrl[m.post_url].sentiment, sentiment_score: byUrl[m.post_url].sentiment_score }
+      }
+      return m
+    })
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Follower Count Cards - Note: Reddit doesn't have follower counts */}
+      {Object.keys(latestFollowers).length > 0 && (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {Object.entries(latestFollowers).map(([platform, data]) => (
+            <div key={platform} className="bg-white p-6 rounded-lg shadow">
+              <h3 className="text-lg font-semibold text-gray-900 mb-2">{platform} Followers</h3>
+              <p className="text-4xl font-bold text-blue-600">{data.count.toLocaleString()}</p>
+              <p className="text-sm text-gray-500 mt-2">
+                Updated {new Date(data.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} at {new Date(data.created_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
+              </p>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Sentiment Trend (daily averages) */}
+      {sentimentData && (() => {
+        // Determine which key contains an array of daily metrics (be defensive about the shape)
+        let raw = []
+        if (Array.isArray(sentimentData)) raw = sentimentData
+        else if (Array.isArray(sentimentData.sentiment_metrics)) raw = sentimentData.sentiment_metrics
+        else if (Array.isArray(sentimentData.daily_metrics)) raw = sentimentData.daily_metrics
+        else if (Array.isArray(sentimentData.metrics)) raw = sentimentData.metrics
+
+        // If we don't have daily metrics but we computed a series from categorized mentions, use that
+        if ((!Array.isArray(raw) || raw.length === 0) && Array.isArray(sentimentSeriesFromMentions) && sentimentSeriesFromMentions.length) {
+          raw = sentimentSeriesFromMentions.map(x => ({ date: x.date, average_sentiment_score: x.average_sentiment_score }))
+        }
+
+        if (!Array.isArray(raw) || raw.length === 0) return null
+
+        const sentimentSeries = raw.map(item => ({
+          _date: item.date || item.week_start_date || item._date,
+          avg_sentiment: (item.average_sentiment_score ?? item.avg_score ?? item.avg_sentiment ?? item.average_score)
+        })).filter(s => s._date && (s.avg_sentiment !== undefined && s.avg_sentiment !== null)).slice()
+
+        if (!sentimentSeries.length) return null
+
+        return (
+          <div className="bg-white p-6 rounded-lg shadow">
+            <h2 className="text-xl font-semibold mb-4">Average Sentiment (Daily)</h2>
+            <ResponsiveContainer width="100%" height={200}>
+              <LineChart data={sentimentSeries.sort((a, b) => new Date(a._date) - new Date(b._date))}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis
+                  dataKey="_date"
+                  tickFormatter={(date) => new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                />
+                <YAxis domain={['auto', 'auto']} />
+                <Tooltip />
+                <Legend />
+                <Line type="monotone" dataKey="avg_sentiment" stroke="#ef4444" name="Avg Sentiment" />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        )
+      })()}
+
+      {/* Platform Metrics */}
+      {Object.entries(platformData).map(([platform, metrics]) => (
+        <div key={platform} className="bg-white p-6 rounded-lg shadow">
+          <h2 className="text-xl font-semibold mb-4">{platform} Metrics</h2>
+          <ResponsiveContainer width="100%" height={300}>
+            <LineChart data={metrics.sort((a, b) => new Date(a._date) - new Date(b._date))}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis
+                dataKey="_date"
+                tickFormatter={(date) => new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+              />
+              <YAxis yAxisId="left" />
+              <YAxis yAxisId="right" orientation="right" domain={[0, 'auto']} />
+              <Tooltip />
+              <Legend />
+              <Line yAxisId="left" type="monotone" dataKey="follower_count" stroke="#3b82f6" name="Followers" strokeWidth={2} />
+              <Line yAxisId="right" type="monotone" dataKey="mentions_count" stroke="#10b981" name="Mentions" strokeWidth={2} />
+              <Line yAxisId="right" type="monotone" dataKey="engagement_rate" stroke="#f59e0b" name="Engagement Rate" strokeWidth={2} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      ))}
+
+      {/* Recent Mentions */}
+      <div className="bg-white p-6 rounded-lg shadow">
+        <h2 className="text-xl font-semibold mb-4">Recent Reddit Mentions</h2>
+        <div className="space-y-4">
+          {enhancedRecent.slice(0, 20).map((mention, idx) => {
+            const rawScore = mention.sentiment_score ?? mention.score ?? null
+            const score = rawScore !== null && rawScore !== undefined ? parseFloat(rawScore) : null
+            let sentimentLabel = mention.sentiment
+            if (!sentimentLabel && typeof score === 'number' && !isNaN(score)) {
+              if (score > 0.1) sentimentLabel = 'positive'
+              else if (score < -0.1) sentimentLabel = 'negative'
+              else sentimentLabel = 'neutral'
+            }
+
+            const badgeColor = sentimentLabel === 'positive' ? 'bg-green-100 text-green-700' : sentimentLabel === 'negative' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'
+
+            return (
+              <div key={idx} className="border-b pb-4 last:border-b-0">
+                <div className="flex justify-between items-start">
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium text-blue-600">{mention.platform}</span>
+                      <span className="text-sm text-gray-500">u/{mention.author}</span>
+                      {sentimentLabel && (
+                        <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${badgeColor} ml-3`}>{sentimentLabel}</span>
+                      )}
+                    </div>
+                    <p className="text-gray-700 mt-1">{mention.content}</p>
+                    {mention.post_url && (
+                      <a
+                        href={mention.post_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs text-blue-600 hover:underline mt-1 inline-block"
+                      >
+                        View post
+                      </a>
+                    )}
+                    <div className="flex gap-4 mt-2 text-sm text-gray-500">
+                      <span>{mention.likes} upvotes</span>
+                      <span>{mention.replies} comments</span>
                       {typeof score === 'number' && (
                         <span>score: {score.toFixed(2)}</span>
                       )}
