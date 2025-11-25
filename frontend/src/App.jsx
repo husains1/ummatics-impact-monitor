@@ -55,7 +55,8 @@ function App() {
   const fetchData = async (endpoint, setData) => {
     setLoading(true)
     try {
-      const response = await fetch(`${API_BASE_URL}${endpoint}?t=${Date.now()}`, {
+      const separator = endpoint.includes('?') ? '&' : '?'
+      const response = await fetch(`${API_BASE_URL}${endpoint}${separator}t=${Date.now()}`, {
         headers: { 'Authorization': `Bearer ${token}` }
       })
 
@@ -533,7 +534,7 @@ function TwitterTab({ data, sentimentData, page, setPage }) {
 
       {/* All Mentions with Pagination */}
       <div className="bg-white p-6 rounded-lg shadow">
-        <h2 className="text-xl font-semibold mb-4">All Mentions ({enhancedRecent.length} total)</h2>
+        <h2 className="text-xl font-semibold mb-4">All Twitter Mentions ({enhancedRecent.length} total, {Math.ceil(enhancedRecent.length / 20)} pages)</h2>
         <div className="space-y-4">
           {enhancedRecent.slice((page - 1) * 20, page * 20).map((mention, idx) => {
             const rawScore = mention.sentiment_score ?? mention.score ?? null

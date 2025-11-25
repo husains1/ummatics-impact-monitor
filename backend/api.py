@@ -1,17 +1,30 @@
 import os
 import psycopg2
+import psycopg2.extensions
 from psycopg2.extras import RealDictCursor
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, Response
 from flask_cors import CORS
 from functools import wraps
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
+from decimal import Decimal
 import logging
+import json
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Custom JSON encoder for dates and decimals
+class DateTimeEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, (date, datetime)):
+            return obj.isoformat()
+        if isinstance(obj, Decimal):
+            return float(obj)
+        return super().default(obj)
+
 app = Flask(__name__)
+app.json_encoder = DateTimeEncoder
 CORS(app)
 
 # Configuration
@@ -147,27 +160,29 @@ def get_social():
         
         if historic:
             # Return ALL historical platform metrics (no limit)
+            # Force string types by casting to TEXT (prevents psycopg2 from re-parsing)
             cur.execute("""
                 SELECT 
-                    date as week_start_date,
+                    TO_CHAR(date, 'YYYY-MM-DD')::TEXT as week_start_date,
                     platform,
                     follower_count,
                     mentions_count,
                     engagement_rate,
-                    created_at
+                    TO_CHAR(created_at, 'YYYY-MM-DD"T"HH24:MI:SS')::TEXT as created_at
                 FROM social_media_daily_metrics
                 ORDER BY date DESC, platform
             """)
             platform_metrics = cur.fetchall()
             
             # Return ALL mentions (no limit)
+            # Force string types by casting to TEXT
             cur.execute("""
                 SELECT
                     platform,
                     author,
                     content,
                     post_url,
-                    posted_at,
+                    TO_CHAR(posted_at, 'YYYY-MM-DD"T"HH24:MI:SS')::TEXT as posted_at,
                     likes,
                     retweets,
                     replies,
@@ -181,7 +196,7 @@ def get_social():
             # Get last 60 days of platform metrics (daily data)
             cur.execute("""
                 SELECT 
-                    date as week_start_date,
+                    TO_CHAR(date, 'YYYY-MM-DD') as week_start_date,
                     platform,
                     follower_count,
                     mentions_count,
@@ -201,7 +216,7 @@ def get_social():
                     author,
                     content,
                     post_url,
-                    posted_at,
+                    TO_CHAR(posted_at, 'YYYY-MM-DD"T"HH24:MI:SS') as posted_at,
                     likes,
                     retweets,
                     replies,
@@ -217,10 +232,15 @@ def get_social():
         cur.close()
         conn.close()
         
-        return jsonify({
+        # Manual JSON serialization to avoid date format issues
+        response_data = {
             'platform_metrics': [dict(row) for row in platform_metrics],
             'recent_mentions': [dict(row) for row in recent_mentions]
-        })
+        }
+        return Response(
+            json.dumps(response_data, cls=DateTimeEncoder),
+            mimetype='application/json'
+        )
         
     except Exception as e:
         logger.error(f"Error fetching social data: {e}")
@@ -236,16 +256,17 @@ def get_sentiment():
         cur = conn.cursor(cursor_factory=RealDictCursor)
         
         # Get ALL historical sentiment metrics (no limit)
+        # Force string types by casting to TEXT (prevents psycopg2 from re-parsing)
         cur.execute("""
             SELECT
-                date,
+                TO_CHAR(date, 'YYYY-MM-DD')::TEXT as date,
                 platform,
                 positive_count,
                 negative_count,
                 neutral_count,
                 unanalyzed_count,
                 average_sentiment_score,
-                created_at
+                TO_CHAR(created_at, 'YYYY-MM-DD"T"HH24:MI:SS')::TEXT as created_at
             FROM social_sentiment_metrics
             ORDER BY date DESC, platform
         """)
@@ -274,10 +295,16 @@ def get_sentiment():
         cur.close()
         conn.close()
         
-        return jsonify({
+        # Manual JSON serialization to avoid Flask's automatic date conversion
+        # Use custom encoder for datetime objects
+        response_data = {
             'sentiment_metrics': [dict(row) for row in sentiment_metrics],
             'categorized_mentions': [dict(row) for row in categorized_mentions]
-        })
+        }
+        return Response(
+            json.dumps(response_data, cls=DateTimeEncoder),
+            mimetype='application/json'
+        )
         
     except Exception as e:
         logger.error(f"Error fetching sentiment data: {e}")
