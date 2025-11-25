@@ -213,10 +213,9 @@ def get_social():
                 LIMIT 100
             """, (four_weeks_ago,))
             recent_mentions = cur.fetchall()
-        else:
-            # Default: recent mentions (last 4 weeks)
-            four_weeks_ago = (datetime.now() - timedelta(weeks=4)).date()
-            cur.execute("""
+        
+        cur.close()
+        conn.close()
                 SELECT 
                     platform,
                     author,
