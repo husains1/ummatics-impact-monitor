@@ -133,7 +133,23 @@ def process_apify_json(json_file):
         if result and result[0] > 0:
             follower_count = result[0]
     
-    engagement_rate = (total_engagement / max(new_mentions, 1)) if new_mentions > 0 else 0
+    # Calculate engagement rate from ALL tweets posted today (not just new ones)
+    # Engagement rate = (total engagement from all today's tweets / follower_count) * 100
+    cur.execute("""
+        SELECT 
+            COUNT(*) as total_mentions,
+            COALESCE(SUM(likes + retweets + replies), 0) as total_engagement
+        FROM social_mentions
+        WHERE platform = 'Twitter' 
+        AND posted_at::date = %s
+    """, (today,))
+    
+    result = cur.fetchone()
+    total_mentions_today = result[0] if result else 0
+    total_engagement_today = result[1] if result else 0
+    
+    # Calculate engagement rate as percentage of followers
+    engagement_rate = (total_engagement_today / follower_count * 100) if follower_count > 0 else 0
     
     # Update social media daily metrics
     cur.execute("""
@@ -142,9 +158,9 @@ def process_apify_json(json_file):
         ON CONFLICT (date, platform) 
         DO UPDATE SET 
             follower_count = EXCLUDED.follower_count,
-            mentions_count = social_media_daily_metrics.mentions_count + EXCLUDED.mentions_count,
+            mentions_count = EXCLUDED.mentions_count,
             engagement_rate = EXCLUDED.engagement_rate
-    """, (today, 'Twitter', follower_count, new_mentions, engagement_rate))
+    """, (today, 'Twitter', follower_count, total_mentions_today, engagement_rate))
     
     conn.commit()
     cur.close()
