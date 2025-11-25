@@ -446,6 +446,11 @@ function TwitterTab({ data, sentimentData, page, setPage }) {
         else if (Array.isArray(sentimentData.daily_metrics)) raw = sentimentData.daily_metrics
         else if (Array.isArray(sentimentData.metrics)) raw = sentimentData.metrics
 
+        // Filter for Twitter platform only
+        if (Array.isArray(raw) && raw.length > 0) {
+          raw = raw.filter(item => item.platform === 'Twitter')
+        }
+
         // If we don't have daily metrics but we computed a series from categorized mentions, use that
         if ((!Array.isArray(raw) || raw.length === 0) && Array.isArray(sentimentSeriesFromMentions) && sentimentSeriesFromMentions.length) {
           raw = sentimentSeriesFromMentions.map(x => ({ date: x.date, average_sentiment_score: x.average_sentiment_score }))
@@ -456,7 +461,7 @@ function TwitterTab({ data, sentimentData, page, setPage }) {
         const sentimentSeries = raw.map(item => ({
           _date: item.date || item.week_start_date || item._date,
           avg_sentiment: (item.average_sentiment_score ?? item.avg_score ?? item.avg_sentiment ?? item.average_score)
-        })).filter(s => s._date && (s.avg_sentiment !== undefined && s.avg_sentiment !== null)).slice()
+        })).filter(s => s._date && (s.avg_sentiment !== undefined && s.avg_sentiment !== null) && s.avg_sentiment !== 0).slice()
 
         if (!sentimentSeries.length) return null
 
