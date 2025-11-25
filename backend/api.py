@@ -161,11 +161,15 @@ def get_social():
         if historic:
             # Return ALL historical platform metrics (no limit)
             # Force string types by casting to TEXT (prevents psycopg2 from re-parsing)
+            # Set follower_count to 0 for dates before Nov 2025 (backfilled data)
             cur.execute("""
                 SELECT 
                     TO_CHAR(date, 'YYYY-MM-DD')::TEXT as week_start_date,
                     platform,
-                    follower_count,
+                    CASE 
+                        WHEN date < '2025-11-01' THEN 0 
+                        ELSE follower_count 
+                    END as follower_count,
                     mentions_count,
                     engagement_rate,
                     TO_CHAR(created_at, 'YYYY-MM-DD"T"HH24:MI:SS')::TEXT as created_at
@@ -194,11 +198,15 @@ def get_social():
             recent_mentions = cur.fetchall()
         else:
             # Get last 60 days of platform metrics (daily data)
+            # Set follower_count to 0 for dates before Nov 2025 (backfilled data)
             cur.execute("""
                 SELECT 
                     TO_CHAR(date, 'YYYY-MM-DD') as week_start_date,
                     platform,
-                    follower_count,
+                    CASE 
+                        WHEN date < '2025-11-01' THEN 0 
+                        ELSE follower_count 
+                    END as follower_count,
                     mentions_count,
                     engagement_rate,
                     created_at
