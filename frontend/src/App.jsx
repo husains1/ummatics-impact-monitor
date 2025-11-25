@@ -14,6 +14,8 @@ function App() {
   const [activeTab, setActiveTab] = useState('overview')
   const [token, setToken] = useState('')
   const [loading, setLoading] = useState(false)
+  const [twitterPage, setTwitterPage] = useState(1)
+  const [redditPage, setRedditPage] = useState(1)
 
   // Data states
   const [overviewData, setOverviewData] = useState(null)
@@ -91,12 +93,14 @@ function App() {
     if (isAuthenticated && token) {
       if (activeTab === 'overview') fetchData('/overview', setOverviewData)
       if (activeTab === 'twitter') {
-        fetchData('/social', setSocialData)
+        fetchData('/social?historic=1', setSocialData)
         fetchData('/sentiment', setSentimentData)
+        setTwitterPage(1)
       }
       if (activeTab === 'reddit') {
-        fetchData('/social', setRedditData)
+        fetchData('/social?historic=1', setRedditData)
         fetchData('/sentiment', setRedditSentimentData)
+        setRedditPage(1)
       }
       if (activeTab === 'website') fetchData('/website', setWebsiteData)
       if (activeTab === 'citations') fetchData('/citations', setCitationsData)
@@ -240,10 +244,10 @@ function App() {
           <OverviewTab data={overviewData} />
         )}
         {!loading && activeTab === 'twitter' && socialData && (
-          <TwitterTab data={socialData} sentimentData={sentimentData} />
+          <TwitterTab data={socialData} sentimentData={sentimentData} page={twitterPage} setPage={setTwitterPage} />
         )}
         {!loading && activeTab === 'reddit' && redditData && (
-          <RedditTab data={redditData} sentimentData={redditSentimentData} />
+          <RedditTab data={redditData} sentimentData={redditSentimentData} page={redditPage} setPage={setRedditPage} />
         )}
         {!loading && activeTab === 'website' && websiteData && (
           <WebsiteTab data={websiteData} />
@@ -322,26 +326,56 @@ function OverviewTab({ data }) {
 }
 
 // Twitter Tab Component
-function TwitterTab({ data, sentimentData }) {
+function TwitterTab({ data, sentimentData, page, setPage }) {
   const { platform_metrics, recent_mentions } = data
 
   // Filter for Twitter only
   const twitterMetrics = platform_metrics.filter(m => m.platform === 'Twitter')
   const twitterMentions = recent_mentions.filter(m => m.platform === 'Twitter')
 
+  // Aggregate metrics by month for full history view
+  const monthlyData = {}
+  twitterMetrics.forEach(metricRaw => {
+    const metric = { ...metricRaw, _date: metricRaw.date || metricRaw.week_start_date || metricRaw.week_start }
+    const date = new Date(metric._date)
+    const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
+    
+    if (!monthlyData[monthKey]) {
+      monthlyData[monthKey] = {
+        month: monthKey,
+        follower_count: metric.follower_count,
+        mentions_count: 0,
+        engagement_rate: 0,
+        count: 0,
+        latest_date: metric._date
+      }
+    }
+    
+    // Use most recent follower count for the month
+    if (new Date(metric._date) > new Date(monthlyData[monthKey].latest_date)) {
+      monthlyData[monthKey].follower_count = metric.follower_count
+      monthlyData[monthKey].latest_date = metric._date
+    }
+    
+    monthlyData[monthKey].mentions_count += metric.mentions_count || 0
+    monthlyData[monthKey].engagement_rate += metric.engagement_rate || 0
+    monthlyData[monthKey].count += 1
+  })
+
+  // Calculate average engagement rate per month
+  Object.values(monthlyData).forEach(month => {
+    month.engagement_rate = month.engagement_rate / month.count
+  })
+
+  const monthlyMetrics = Object.values(monthlyData).sort((a, b) => a.month.localeCompare(b.month))
+
   // Group metrics by platform and get latest follower count.
-  // Normalize date fields (daily data may use `date` instead of `week_start_date`).
-  const platformData = {}
+  const platformData = { Twitter: monthlyMetrics }
   const latestFollowers = {}
 
   twitterMetrics.forEach(metricRaw => {
     const metric = { ...metricRaw, _date: metricRaw.date || metricRaw.week_start_date || metricRaw.week_start }
-
-    if (!platformData[metric.platform]) {
-      platformData[metric.platform] = []
-    }
-    platformData[metric.platform].push(metric)
-
+    
     // Track latest follower count (most recent date)
     const existing = latestFollowers[metric.platform]
     if (!existing || new Date(metric._date) > new Date(existing._date)) {
@@ -403,7 +437,7 @@ function TwitterTab({ data, sentimentData }) {
         ))}
       </div>
 
-      {/* Sentiment Trend (daily averages) */}
+      {/* Sentiment Trend (monthly averages for full history) */}
       {sentimentData && (() => {
         // Determine which key contains an array of daily metrics (be defensive about the shape)
         let raw = []
@@ -426,15 +460,35 @@ function TwitterTab({ data, sentimentData }) {
 
         if (!sentimentSeries.length) return null
 
+        // Aggregate by month for full history view
+        const monthlySentiment = {}
+        sentimentSeries.forEach(item => {
+          const date = new Date(item._date)
+          const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
+          if (!monthlySentiment[monthKey]) {
+            monthlySentiment[monthKey] = { month: monthKey, sum: 0, count: 0 }
+          }
+          monthlySentiment[monthKey].sum += item.avg_sentiment
+          monthlySentiment[monthKey].count += 1
+        })
+
+        const monthlySentimentData = Object.values(monthlySentiment).map(m => ({
+          month: m.month,
+          avg_sentiment: m.sum / m.count
+        })).sort((a, b) => a.month.localeCompare(b.month))
+
         return (
           <div className="bg-white p-6 rounded-lg shadow">
-            <h2 className="text-xl font-semibold mb-4">Average Sentiment (Daily)</h2>
-            <ResponsiveContainer width="100%" height={200}>
-              <LineChart data={sentimentSeries.sort((a, b) => new Date(a._date) - new Date(b._date))}>
+            <h2 className="text-xl font-semibold mb-4">Average Sentiment (Monthly - Full History)</h2>
+            <ResponsiveContainer width="100%" height={300}>
+              <LineChart data={monthlySentimentData}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis
-                  dataKey="_date"
-                  tickFormatter={(date) => new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                  dataKey="month"
+                  tickFormatter={(month) => {
+                    const [year, m] = month.split('-')
+                    return new Date(year, parseInt(m) - 1).toLocaleDateString('en-US', { year: 'numeric', month: 'short' })
+                  }}
                 />
                 <YAxis domain={['auto', 'auto']} />
                 <Tooltip />
@@ -449,13 +503,16 @@ function TwitterTab({ data, sentimentData }) {
       {/* Platform Metrics */}
       {Object.entries(platformData).map(([platform, metrics]) => (
         <div key={platform} className="bg-white p-6 rounded-lg shadow">
-          <h2 className="text-xl font-semibold mb-4">{platform} Metrics</h2>
+          <h2 className="text-xl font-semibold mb-4">{platform} Metrics (Monthly - Full History)</h2>
           <ResponsiveContainer width="100%" height={300}>
-            <LineChart data={metrics.sort((a, b) => new Date(a._date) - new Date(b._date))}>
+            <LineChart data={metrics}>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis
-                dataKey="_date"
-                tickFormatter={(date) => new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                dataKey="month"
+                tickFormatter={(month) => {
+                  const [year, m] = month.split('-')
+                  return new Date(year, parseInt(m) - 1).toLocaleDateString('en-US', { year: 'numeric', month: 'short' })
+                }}
               />
               <YAxis yAxisId="left" />
               <YAxis yAxisId="right" orientation="right" domain={[0, 'auto']} />
@@ -469,11 +526,11 @@ function TwitterTab({ data, sentimentData }) {
         </div>
       ))}
 
-      {/* Recent Mentions */}
+      {/* All Mentions with Pagination */}
       <div className="bg-white p-6 rounded-lg shadow">
-        <h2 className="text-xl font-semibold mb-4">Recent Mentions</h2>
+        <h2 className="text-xl font-semibold mb-4">All Mentions ({enhancedRecent.length} total)</h2>
         <div className="space-y-4">
-          {enhancedRecent.slice(0, 20).map((mention, idx) => {
+          {enhancedRecent.slice((page - 1) * 20, page * 20).map((mention, idx) => {
             const rawScore = mention.sentiment_score ?? mention.score ?? null
             const score = rawScore !== null && rawScore !== undefined ? parseFloat(rawScore) : null
             let sentimentLabel = mention.sentiment
@@ -524,13 +581,35 @@ function TwitterTab({ data, sentimentData }) {
             )
           })}
         </div>
+        {/* Pagination Controls */}
+        {enhancedRecent.length > 20 && (
+          <div className="flex justify-center items-center gap-4 mt-6">
+            <button
+              onClick={() => setPage(Math.max(1, page - 1))}
+              disabled={page === 1}
+              className="px-4 py-2 bg-blue-600 text-white rounded disabled:bg-gray-300 disabled:cursor-not-allowed hover:bg-blue-700"
+            >
+              Previous
+            </button>
+            <span className="text-sm text-gray-600">
+              Page {page} of {Math.ceil(enhancedRecent.length / 20)}
+            </span>
+            <button
+              onClick={() => setPage(Math.min(Math.ceil(enhancedRecent.length / 20), page + 1))}
+              disabled={page >= Math.ceil(enhancedRecent.length / 20)}
+              className="px-4 py-2 bg-blue-600 text-white rounded disabled:bg-gray-300 disabled:cursor-not-allowed hover:bg-blue-700"
+            >
+              Next
+            </button>
+          </div>
+        )}
       </div>
     </div>
   )
 }
 
 // Reddit Tab Component
-function RedditTab({ data, sentimentData }) {
+function RedditTab({ data, sentimentData, page, setPage }) {
   const { platform_metrics, recent_mentions } = data
 
   // Filter for Reddit only
@@ -679,60 +758,88 @@ function RedditTab({ data, sentimentData }) {
         </div>
       ))}
 
-      {/* Recent Mentions */}
+      {/* All Reddit Mentions with Pagination */}
       <div className="bg-white p-6 rounded-lg shadow">
-        <h2 className="text-xl font-semibold mb-4">Recent Reddit Mentions</h2>
-        <div className="space-y-4">
-          {enhancedRecent.slice(0, 20).map((mention, idx) => {
-            const rawScore = mention.sentiment_score ?? mention.score ?? null
-            const score = rawScore !== null && rawScore !== undefined ? parseFloat(rawScore) : null
-            let sentimentLabel = mention.sentiment
-            if (!sentimentLabel && typeof score === 'number' && !isNaN(score)) {
-              if (score > 0.1) sentimentLabel = 'positive'
-              else if (score < -0.1) sentimentLabel = 'negative'
-              else sentimentLabel = 'neutral'
-            }
+        <h2 className="text-xl font-semibold mb-4">All Reddit Mentions ({enhancedRecent.length} total)</h2>
+        {enhancedRecent.length === 0 ? (
+          <p className="text-gray-500 text-center py-8">No Reddit mentions found in database</p>
+        ) : (
+          <>
+            <div className="space-y-4">
+              {enhancedRecent.slice((page - 1) * 20, page * 20).map((mention, idx) => {
+                const rawScore = mention.sentiment_score ?? mention.score ?? null
+                const score = rawScore !== null && rawScore !== undefined ? parseFloat(rawScore) : null
+                let sentimentLabel = mention.sentiment
+                if (!sentimentLabel && typeof score === 'number' && !isNaN(score)) {
+                  if (score > 0.1) sentimentLabel = 'positive'
+                  else if (score < -0.1) sentimentLabel = 'negative'
+                  else sentimentLabel = 'neutral'
+                }
 
-            const badgeColor = sentimentLabel === 'positive' ? 'bg-green-100 text-green-700' : sentimentLabel === 'negative' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'
+                const badgeColor = sentimentLabel === 'positive' ? 'bg-green-100 text-green-700' : sentimentLabel === 'negative' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'
 
-            return (
-              <div key={idx} className="border-b pb-4 last:border-b-0">
-                <div className="flex justify-between items-start">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium text-blue-600">{mention.platform}</span>
-                      <span className="text-sm text-gray-500">u/{mention.author}</span>
-                      {sentimentLabel && (
-                        <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${badgeColor} ml-3`}>{sentimentLabel}</span>
-                      )}
-                    </div>
-                    <p className="text-gray-700 mt-1">{mention.content}</p>
-                    {mention.post_url && (
-                      <a
-                        href={mention.post_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-xs text-blue-600 hover:underline mt-1 inline-block"
-                      >
-                        View post
-                      </a>
-                    )}
-                    <div className="flex gap-4 mt-2 text-sm text-gray-500">
-                      <span>{mention.likes} upvotes</span>
-                      <span>{mention.replies} comments</span>
-                      {typeof score === 'number' && (
-                        <span>score: {score.toFixed(2)}</span>
-                      )}
+                return (
+                  <div key={idx} className="border-b pb-4 last:border-b-0">
+                    <div className="flex justify-between items-start">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-medium text-blue-600">{mention.platform}</span>
+                          <span className="text-sm text-gray-500">u/{mention.author}</span>
+                          {sentimentLabel && (
+                            <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${badgeColor} ml-3`}>{sentimentLabel}</span>
+                          )}
+                        </div>
+                        <p className="text-gray-700 mt-1">{mention.content}</p>
+                        {mention.post_url && (
+                          <a
+                            href={mention.post_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-xs text-blue-600 hover:underline mt-1 inline-block"
+                          >
+                            View post
+                          </a>
+                        )}
+                        <div className="flex gap-4 mt-2 text-sm text-gray-500">
+                          <span>{mention.likes} upvotes</span>
+                          <span>{mention.replies} comments</span>
+                          {typeof score === 'number' && (
+                            <span>score: {score.toFixed(2)}</span>
+                          )}
+                        </div>
+                      </div>
+                      <span className="text-xs text-gray-400">
+                        {mention.posted_at ? new Date(mention.posted_at).toLocaleDateString() : (mention.created_at ? new Date(mention.created_at).toLocaleDateString() : '')}
+                      </span>
                     </div>
                   </div>
-                  <span className="text-xs text-gray-400">
-                    {mention.posted_at ? new Date(mention.posted_at).toLocaleDateString() : (mention.created_at ? new Date(mention.created_at).toLocaleDateString() : '')}
-                  </span>
-                </div>
+                )
+              })}
+            </div>
+            {/* Pagination Controls */}
+            {enhancedRecent.length > 20 && (
+              <div className="flex justify-center items-center gap-4 mt-6">
+                <button
+                  onClick={() => setPage(Math.max(1, page - 1))}
+                  disabled={page === 1}
+                  className="px-4 py-2 bg-blue-600 text-white rounded disabled:bg-gray-300 disabled:cursor-not-allowed hover:bg-blue-700"
+                >
+                  Previous
+                </button>
+                <span className="text-sm text-gray-600">
+                  Page {page} of {Math.ceil(enhancedRecent.length / 20)}
+                </span>
+                <button
+                  onClick={() => setPage(Math.min(Math.ceil(enhancedRecent.length / 20), page + 1))}
+                  disabled={page >= Math.ceil(enhancedRecent.length / 20)}
+                  className="px-4 py-2 bg-blue-600 text-white rounded disabled:bg-gray-300 disabled:cursor-not-allowed hover:bg-blue-700"
+                >
+                  Next
+                </button>
               </div>
-            )
-          })}
-        </div>
+            )}
+          </>
+        )}
       </div>
     </div>
   )
