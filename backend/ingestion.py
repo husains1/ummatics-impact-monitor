@@ -413,9 +413,9 @@ def ingest_reddit():
                         upvotes = 0
                         comments = 0
 
-                        # Analyze sentiment using TextBlob (fast) instead of transformer (slow)
+                        # Analyze sentiment using transformer (same as Twitter for consistency)
                         sentiment_text = f"{title} {content}"
-                        sentiment, sentiment_score = analyze_sentiment_textblob(sentiment_text)
+                        sentiment, sentiment_score = analyze_sentiment(sentiment_text)
 
                         # Add small delay every 5 posts to avoid overloading
                         if (entry_index + 1) % 5 == 0:
