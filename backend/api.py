@@ -216,26 +216,6 @@ def get_social():
         
         cur.close()
         conn.close()
-                SELECT 
-                    platform,
-                    author,
-                    content,
-                    post_url,
-                    posted_at,
-                    likes,
-                    retweets,
-                    replies,
-                    sentiment,
-                    sentiment_score
-                FROM social_mentions
-                WHERE week_start_date >= %s
-                ORDER BY posted_at DESC
-                LIMIT 100
-            """, (four_weeks_ago,))
-            recent_mentions = cur.fetchall()
-        
-        cur.close()
-        conn.close()
         
         return jsonify({
             'platform_metrics': [dict(row) for row in platform_metrics],
