@@ -198,3 +198,11 @@ else:
    - Remove Docker images and rebuild
    - Check logs at each layer
    - Verify assumptions with curl/direct tests
+
+## User guidelines
+
+1. ** Always re-deploy the front-end on AWS after making any front-end code changes
+2. ** Use full npm rebuild without cache locally and then push to ECR
+3. ** Use ECR to deploy the front-end on AWS
+4. ** Ensure previous versions of the front-end are cleaned up and no longer available on the EC2 node
+5. ** Always confirm the deployment by connecting to the website URL

@@ -534,7 +534,40 @@ function TwitterTab({ data, sentimentData, page, setPage }) {
 
       {/* All Mentions with Pagination */}
       <div className="bg-white p-6 rounded-lg shadow">
-        <h2 className="text-xl font-semibold mb-4">All Twitter Mentions ({enhancedRecent.length} total, {Math.ceil(enhancedRecent.length / 20)} pages)</h2>
+        <div className="flex justify-between items-center mb-4">
+          <h2 className="text-xl font-semibold">All Twitter Mentions ({enhancedRecent.length} total, {Math.ceil(enhancedRecent.length / 20)} pages)</h2>
+          <button
+            onClick={() => {
+              const csv = [
+                ['Platform', 'Author', 'Content', 'Posted At', 'Likes', 'Retweets', 'Replies', 'Sentiment', 'Score', 'URL'].join(','),
+                ...enhancedRecent.map(m => [
+                  m.platform || '',
+                  m.author || '',
+                  `"${(m.content || '').replace(/"/g, '""')}"`,
+                  m.posted_at || '',
+                  m.likes || 0,
+                  m.retweets || 0,
+                  m.replies || 0,
+                  m.sentiment || '',
+                  m.sentiment_score || '',
+                  m.post_url || ''
+                ].join(','))
+              ].join('\n')
+              const blob = new Blob([csv], { type: 'text/csv' })
+              const url = window.URL.createObjectURL(blob)
+              const a = document.createElement('a')
+              a.href = url
+              a.download = `twitter-mentions-${new Date().toISOString().split('T')[0]}.csv`
+              document.body.appendChild(a)
+              a.click()
+              document.body.removeChild(a)
+              window.URL.revokeObjectURL(url)
+            }}
+            className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 text-sm"
+          >
+            📥 Download CSV
+          </button>
+        </div>
         <div className="space-y-4">
           {enhancedRecent.slice((page - 1) * 20, page * 20).map((mention, idx) => {
             const rawScore = mention.sentiment_score ?? mention.score ?? null
@@ -589,24 +622,58 @@ function TwitterTab({ data, sentimentData, page, setPage }) {
         </div>
         {/* Pagination Controls */}
         {enhancedRecent.length > 20 && (
-          <div className="flex justify-center items-center gap-4 mt-6">
-            <button
-              onClick={() => setPage(Math.max(1, page - 1))}
-              disabled={page === 1}
-              className="px-4 py-2 bg-blue-600 text-white rounded disabled:bg-gray-300 disabled:cursor-not-allowed hover:bg-blue-700"
-            >
-              Previous
-            </button>
-            <span className="text-sm text-gray-600">
-              Page {page} of {Math.ceil(enhancedRecent.length / 20)}
-            </span>
-            <button
-              onClick={() => setPage(Math.min(Math.ceil(enhancedRecent.length / 20), page + 1))}
-              disabled={page >= Math.ceil(enhancedRecent.length / 20)}
-              className="px-4 py-2 bg-blue-600 text-white rounded disabled:bg-gray-300 disabled:cursor-not-allowed hover:bg-blue-700"
-            >
-              Next
-            </button>
+          <div className="flex flex-col gap-4 mt-6">
+            <div className="flex justify-center items-center gap-4">
+              <button
+                onClick={() => setPage(1)}
+                disabled={page === 1}
+                className="px-3 py-2 bg-blue-600 text-white rounded disabled:bg-gray-300 disabled:cursor-not-allowed hover:bg-blue-700 text-sm"
+              >
+                First
+              </button>
+              <button
+                onClick={() => setPage(Math.max(1, page - 1))}
+                disabled={page === 1}
+                className="px-4 py-2 bg-blue-600 text-white rounded disabled:bg-gray-300 disabled:cursor-not-allowed hover:bg-blue-700"
+              >
+                Previous
+              </button>
+              <span className="text-sm text-gray-600">
+                Page {page} of {Math.ceil(enhancedRecent.length / 20)}
+              </span>
+              <button
+                onClick={() => setPage(Math.min(Math.ceil(enhancedRecent.length / 20), page + 1))}
+                disabled={page >= Math.ceil(enhancedRecent.length / 20)}
+                className="px-4 py-2 bg-blue-600 text-white rounded disabled:bg-gray-300 disabled:cursor-not-allowed hover:bg-blue-700"
+              >
+                Next
+              </button>
+              <button
+                onClick={() => setPage(Math.ceil(enhancedRecent.length / 20))}
+                disabled={page >= Math.ceil(enhancedRecent.length / 20)}
+                className="px-3 py-2 bg-blue-600 text-white rounded disabled:bg-gray-300 disabled:cursor-not-allowed hover:bg-blue-700 text-sm"
+              >
+                Last
+              </button>
+            </div>
+            <div className="flex justify-center items-center gap-2">
+              <label htmlFor="pageJump" className="text-sm text-gray-600">Jump to page:</label>
+              <input
+                id="pageJump"
+                type="number"
+                min="1"
+                max={Math.ceil(enhancedRecent.length / 20)}
+                value={page}
+                onChange={(e) => {
+                  const val = parseInt(e.target.value)
+                  if (val >= 1 && val <= Math.ceil(enhancedRecent.length / 20)) {
+                    setPage(val)
+                  }
+                }}
+                className="w-20 px-2 py-1 border border-gray-300 rounded text-center"
+              />
+              <span className="text-sm text-gray-500">of {Math.ceil(enhancedRecent.length / 20)}</span>
+            </div>
           </div>
         )}
       </div>
@@ -766,7 +833,41 @@ function RedditTab({ data, sentimentData, page, setPage }) {
 
       {/* All Reddit Mentions with Pagination */}
       <div className="bg-white p-6 rounded-lg shadow">
-        <h2 className="text-xl font-semibold mb-4">All Reddit Mentions ({enhancedRecent.length} total)</h2>
+        <div className="flex justify-between items-center mb-4">
+          <h2 className="text-xl font-semibold">All Reddit Mentions ({enhancedRecent.length} total, {Math.ceil(enhancedRecent.length / 20)} pages)</h2>
+          {enhancedRecent.length > 0 && (
+            <button
+              onClick={() => {
+                const csv = [
+                  ['Platform', 'Author', 'Content', 'Posted At', 'Likes', 'Replies', 'Sentiment', 'Score', 'URL'].join(','),
+                  ...enhancedRecent.map(m => [
+                    m.platform || '',
+                    m.author || '',
+                    `"${(m.content || '').replace(/"/g, '""')}"`,
+                    m.posted_at || '',
+                    m.likes || 0,
+                    m.replies || 0,
+                    m.sentiment || '',
+                    m.sentiment_score || '',
+                    m.post_url || ''
+                  ].join(','))
+                ].join('\n')
+                const blob = new Blob([csv], { type: 'text/csv' })
+                const url = window.URL.createObjectURL(blob)
+                const a = document.createElement('a')
+                a.href = url
+                a.download = `reddit-mentions-${new Date().toISOString().split('T')[0]}.csv`
+                document.body.appendChild(a)
+                a.click()
+                document.body.removeChild(a)
+                window.URL.revokeObjectURL(url)
+              }}
+              className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 text-sm"
+            >
+              📥 Download CSV
+            </button>
+          )}
+        </div>
         {enhancedRecent.length === 0 ? (
           <p className="text-gray-500 text-center py-8">No Reddit mentions found in database</p>
         ) : (
@@ -824,24 +925,58 @@ function RedditTab({ data, sentimentData, page, setPage }) {
             </div>
             {/* Pagination Controls */}
             {enhancedRecent.length > 20 && (
-              <div className="flex justify-center items-center gap-4 mt-6">
-                <button
-                  onClick={() => setPage(Math.max(1, page - 1))}
-                  disabled={page === 1}
-                  className="px-4 py-2 bg-blue-600 text-white rounded disabled:bg-gray-300 disabled:cursor-not-allowed hover:bg-blue-700"
-                >
-                  Previous
-                </button>
-                <span className="text-sm text-gray-600">
-                  Page {page} of {Math.ceil(enhancedRecent.length / 20)}
-                </span>
-                <button
-                  onClick={() => setPage(Math.min(Math.ceil(enhancedRecent.length / 20), page + 1))}
-                  disabled={page >= Math.ceil(enhancedRecent.length / 20)}
-                  className="px-4 py-2 bg-blue-600 text-white rounded disabled:bg-gray-300 disabled:cursor-not-allowed hover:bg-blue-700"
-                >
-                  Next
-                </button>
+              <div className="flex flex-col gap-4 mt-6">
+                <div className="flex justify-center items-center gap-4">
+                  <button
+                    onClick={() => setPage(1)}
+                    disabled={page === 1}
+                    className="px-3 py-2 bg-blue-600 text-white rounded disabled:bg-gray-300 disabled:cursor-not-allowed hover:bg-blue-700 text-sm"
+                  >
+                    First
+                  </button>
+                  <button
+                    onClick={() => setPage(Math.max(1, page - 1))}
+                    disabled={page === 1}
+                    className="px-4 py-2 bg-blue-600 text-white rounded disabled:bg-gray-300 disabled:cursor-not-allowed hover:bg-blue-700"
+                  >
+                    Previous
+                  </button>
+                  <span className="text-sm text-gray-600">
+                    Page {page} of {Math.ceil(enhancedRecent.length / 20)}
+                  </span>
+                  <button
+                    onClick={() => setPage(Math.min(Math.ceil(enhancedRecent.length / 20), page + 1))}
+                    disabled={page >= Math.ceil(enhancedRecent.length / 20)}
+                    className="px-4 py-2 bg-blue-600 text-white rounded disabled:bg-gray-300 disabled:cursor-not-allowed hover:bg-blue-700"
+                  >
+                    Next
+                  </button>
+                  <button
+                    onClick={() => setPage(Math.ceil(enhancedRecent.length / 20))}
+                    disabled={page >= Math.ceil(enhancedRecent.length / 20)}
+                    className="px-3 py-2 bg-blue-600 text-white rounded disabled:bg-gray-300 disabled:cursor-not-allowed hover:bg-blue-700 text-sm"
+                  >
+                    Last
+                  </button>
+                </div>
+                <div className="flex justify-center items-center gap-2">
+                  <label htmlFor="redditPageJump" className="text-sm text-gray-600">Jump to page:</label>
+                  <input
+                    id="redditPageJump"
+                    type="number"
+                    min="1"
+                    max={Math.ceil(enhancedRecent.length / 20)}
+                    value={page}
+                    onChange={(e) => {
+                      const val = parseInt(e.target.value)
+                      if (val >= 1 && val <= Math.ceil(enhancedRecent.length / 20)) {
+                        setPage(val)
+                      }
+                    }}
+                    className="w-20 px-2 py-1 border border-gray-300 rounded text-center"
+                  />
+                  <span className="text-sm text-gray-500">of {Math.ceil(enhancedRecent.length / 20)}</span>
+                </div>
               </div>
             )}
           </>
