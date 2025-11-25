@@ -142,26 +142,25 @@ def get_social():
         conn = get_db_connection()
         cur = conn.cursor(cursor_factory=RealDictCursor)
         
-        # Get last 60 days of platform metrics (daily data)
-        cur.execute("""
-            SELECT 
-                date as week_start_date,
-                platform,
-                follower_count,
-                mentions_count,
-                engagement_rate,
-                created_at
-            FROM social_media_daily_metrics
-            ORDER BY date DESC, platform
-            LIMIT 180
-        """)
-        platform_metrics = cur.fetchall()
-        
-        # Allow frontend to request historic mentions when needed
+        # Allow frontend to request historic data
         historic = request.args.get('historic', '0') in ('1', 'true', 'True')
-
+        
         if historic:
-            # Return latest N mentions regardless of week (historic view)
+            # Return ALL historical platform metrics (no limit)
+            cur.execute("""
+                SELECT 
+                    date as week_start_date,
+                    platform,
+                    follower_count,
+                    mentions_count,
+                    engagement_rate,
+                    created_at
+                FROM social_media_daily_metrics
+                ORDER BY date DESC, platform
+            """)
+            platform_metrics = cur.fetchall()
+            
+            # Return ALL mentions (no limit)
             cur.execute("""
                 SELECT
                     platform,
@@ -176,8 +175,43 @@ def get_social():
                     sentiment_score
                 FROM social_mentions
                 ORDER BY posted_at DESC
-                LIMIT 200
             """)
+            recent_mentions = cur.fetchall()
+        else:
+            # Get last 60 days of platform metrics (daily data)
+            cur.execute("""
+                SELECT 
+                    date as week_start_date,
+                    platform,
+                    follower_count,
+                    mentions_count,
+                    engagement_rate,
+                    created_at
+                FROM social_media_daily_metrics
+                ORDER BY date DESC, platform
+                LIMIT 180
+            """)
+            platform_metrics = cur.fetchall()
+            
+            # Default: recent mentions (last 4 weeks)
+            four_weeks_ago = (datetime.now() - timedelta(weeks=4)).date()
+            cur.execute("""
+                SELECT 
+                    platform,
+                    author,
+                    content,
+                    post_url,
+                    posted_at,
+                    likes,
+                    retweets,
+                    replies,
+                    sentiment,
+                    sentiment_score
+                FROM social_mentions
+                WHERE week_start_date >= %s
+                ORDER BY posted_at DESC
+                LIMIT 100
+            """, (four_weeks_ago,))
             recent_mentions = cur.fetchall()
         else:
             # Default: recent mentions (last 4 weeks)
@@ -222,7 +256,7 @@ def get_sentiment():
         conn = get_db_connection()
         cur = conn.cursor(cursor_factory=RealDictCursor)
         
-        # Get sentiment metrics for last 30 days (all platforms)
+        # Get ALL historical sentiment metrics (no limit)
         cur.execute("""
             SELECT
                 date,
@@ -235,7 +269,6 @@ def get_sentiment():
                 created_at
             FROM social_sentiment_metrics
             ORDER BY date DESC, platform
-            LIMIT 90
         """)
         sentiment_metrics = cur.fetchall()
         
