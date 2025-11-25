@@ -260,10 +260,13 @@ def get_social():
 def get_sentiment():
     """Get sentiment analysis data for social mentions"""
     try:
+        # Allow filtering by platform (Twitter or Reddit)
+        platform = request.args.get('platform', 'Twitter')
+        
         conn = get_db_connection()
         cur = conn.cursor(cursor_factory=RealDictCursor)
         
-        # Get ALL historical sentiment metrics (no limit)
+        # Get ALL historical sentiment metrics for the specified platform
         # Force string types by casting to TEXT (prevents psycopg2 from re-parsing)
         cur.execute("""
             SELECT
@@ -276,11 +279,12 @@ def get_sentiment():
                 average_sentiment_score,
                 TO_CHAR(created_at, 'YYYY-MM-DD"T"HH24:MI:SS')::TEXT as created_at
             FROM social_sentiment_metrics
-            ORDER BY date DESC, platform
-        """)
+            WHERE platform = %s
+            ORDER BY date DESC
+        """, (platform,))
         sentiment_metrics = cur.fetchall()
         
-        # Get sentiment-categorized recent mentions
+        # Get sentiment-categorized recent mentions for the specified platform
         cur.execute("""
             SELECT 
                 author,
@@ -293,11 +297,11 @@ def get_sentiment():
                 retweets,
                 replies
             FROM social_mentions 
-            WHERE platform = 'Twitter'
+            WHERE platform = %s
             AND sentiment IS NOT NULL
             ORDER BY posted_at DESC
             LIMIT 50
-        """)
+        """, (platform,))
         categorized_mentions = cur.fetchall()
         
         cur.close()

@@ -397,3 +397,49 @@ Frontend (App.jsx) - fallback for existing data:
 - **RSS feeds often contain HTML**: Always decode entities and strip tags from RSS content
 - **Clean data at ingestion**: Better to clean data when storing than when displaying
 - **Dual cleanup approach**: Clean at ingestion for new data, handle legacy data in frontend
+
+### Problem 4: Reddit Showing Twitter Sentiment Data
+Reddit sentiment chart was showing incorrect or zero sentiment values because the API was returning ALL platforms' sentiment data, and Reddit was using metrics from Twitter or empty placeholder rows.
+
+### Root Cause
+- `/api/sentiment` endpoint returned sentiment data for ALL platforms without filtering
+- Reddit tab received the same sentiment data as Twitter tab
+- `categorized_mentions` only contained Twitter data, but `sentiment_metrics` included both platforms
+- Reddit sentiment chart showed database rows with zero values (placeholder data)
+
+### Solution
+Backend (api.py):
+```python
+# Add platform parameter to sentiment endpoint
+platform = request.args.get('platform', 'Twitter')
+
+# Filter sentiment metrics by platform
+cur.execute("""
+    SELECT ... FROM social_sentiment_metrics
+    WHERE platform = %s
+    ORDER BY date DESC
+""", (platform,))
+
+# Filter categorized mentions by platform
+cur.execute("""
+    SELECT ... FROM social_mentions 
+    WHERE platform = %s AND sentiment IS NOT NULL
+    ORDER BY posted_at DESC LIMIT 50
+""", (platform,))
+```
+
+Frontend (App.jsx):
+```javascript
+// Twitter tab requests Twitter sentiment
+fetchData('/sentiment?platform=Twitter', setSentimentData)
+
+// Reddit tab requests Reddit sentiment  
+fetchData('/sentiment?platform=Reddit', setRedditSentimentData)
+```
+
+### Key Takeaways
+- **Platform-specific API calls**: Each platform's tab should request its own filtered data
+- **Don't share cross-platform data**: Twitter and Reddit have separate data streams
+- **Filter at the source**: Backend should filter by platform, not frontend
+- **Test with actual data**: Verify each platform shows only its own sentiment metrics
+- **Database can have placeholder rows**: Empty sentiment rows created by scheduler need filtering

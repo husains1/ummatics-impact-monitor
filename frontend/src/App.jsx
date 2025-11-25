@@ -95,12 +95,12 @@ function App() {
       if (activeTab === 'overview') fetchData('/overview', setOverviewData)
       if (activeTab === 'twitter') {
         fetchData('/social?historic=1', setSocialData)
-        fetchData('/sentiment', setSentimentData)
+        fetchData('/sentiment?platform=Twitter', setSentimentData)
         setTwitterPage(1)
       }
       if (activeTab === 'reddit') {
         fetchData('/social?historic=1', setRedditData)
-        fetchData('/sentiment', setRedditSentimentData)
+        fetchData('/sentiment?platform=Reddit', setRedditSentimentData)
         setRedditPage(1)
       }
       if (activeTab === 'website') fetchData('/website', setWebsiteData)
