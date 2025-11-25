@@ -10,6 +10,7 @@ import time  # Add time module for delays
 import re
 import json
 from textblob import TextBlob
+from apify_client import ApifyClient
 from google.analytics.data_v1beta import BetaAnalyticsDataClient
 from google.analytics.data_v1beta.types import (
     DateRange,
@@ -38,7 +39,8 @@ DB_CONFIG = {
 # API Configuration
 GOOGLE_ALERTS_RSS_URL = os.getenv('GOOGLE_ALERTS_RSS_URL', '')
 REDDIT_RSS_URLS = os.getenv('REDDIT_RSS_URLS', '').split(',') if os.getenv('REDDIT_RSS_URLS') else []
-TWITTER_BEARER_TOKEN = os.getenv('TWITTER_BEARER_TOKEN', '')
+APIFY_API_TOKEN = os.getenv('APIFY_API_TOKEN', '')
+TWITTER_BEARER_TOKEN = os.getenv('TWITTER_BEARER_TOKEN', '')  # Used for follower count and fallback
 GA4_PROPERTY_ID = os.getenv('GA4_PROPERTY_ID', '')
 CONTACT_EMAIL = os.getenv('CONTACT_EMAIL', 'contact@ummatics.org')
 
@@ -373,12 +375,25 @@ def ingest_reddit():
             try:
                 logger.info(f"Fetching Reddit RSS feed {feed_index + 1}/{len(REDDIT_RSS_URLS)}: {rss_url}")
                 # Reddit requires User-Agent header to return RSS/XML instead of HTML
-                req = urllib.request.Request(rss_url, headers={'User-Agent': 'Mozilla/5.0 (compatible; UmmaticsBot/1.0)'})
-                response = urllib.request.urlopen(req)
+                # Use more complete headers to avoid blocking
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                    'Accept': 'application/rss+xml, application/xml, text/xml, */*',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                }
+                req = urllib.request.Request(rss_url, headers=headers)
+                response = urllib.request.urlopen(req, timeout=30)
                 content = response.read()
                 feed = feedparser.parse(content)
 
                 logger.info(f"Found {len(feed.entries)} entries in feed")
+                
+                # Check if we got HTML error page instead of RSS
+                if hasattr(feed, 'bozo') and feed.bozo:
+                    logger.warning(f"Feed parsing error for {rss_url}: {feed.get('bozo_exception', 'Unknown error')}")
+                    if len(feed.entries) == 0:
+                        logger.error(f"No valid RSS entries found, possibly blocked or invalid URL")
+                        continue
 
                 for entry_index, entry in enumerate(feed.entries):
                     try:
@@ -451,16 +466,16 @@ def ingest_reddit():
                 logger.error(f"Error fetching Reddit RSS feed {rss_url}: {e}")
                 continue
 
-        # Update daily metrics for Reddit
+        # Update daily metrics for Reddit (Reddit has no follower concept)
         if total_mentions_today > 0:
             cur.execute("""
-                INSERT INTO social_media_daily_metrics (date, platform, follower_count, mentions_count, engagement_rate)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO social_media_daily_metrics (date, platform, mentions_count, engagement_rate)
+                VALUES (%s, %s, %s, %s)
                 ON CONFLICT (date, platform)
                 DO UPDATE SET
                     mentions_count = EXCLUDED.mentions_count,
                     engagement_rate = EXCLUDED.engagement_rate
-            """, (today, 'Reddit', 0, total_mentions_today, 0.0))
+            """, (today, 'Reddit', total_mentions_today, 0.0))
 
         # Update sentiment metrics for Reddit
         if total_new_mentions > 0:
@@ -476,41 +491,23 @@ def ingest_reddit():
         logger.error(f"Error in Reddit ingestion: {e}")
 
 
-def get_twitter_user_info(username):
-    """Fetch Twitter user information including follower count"""
-    if not TWITTER_BEARER_TOKEN:
-        return None
-    
-    try:
-        user_url = f"https://api.twitter.com/2/users/by/username/{username}"
-        headers = {"Authorization": f"Bearer {TWITTER_BEARER_TOKEN}"}
-        params = {"user.fields": "public_metrics"}
-        
-        response = requests.get(user_url, headers=headers, params=params)
-        
-        # Handle rate limiting gracefully
-        if response.status_code == 429:
-            logger.warning(f"Twitter API rate limit exceeded for user lookup: {username}")
-            logger.info("Rate limit will reset in ~15 minutes.")
-            return None
-        
-        response.raise_for_status()
-        data = response.json()
-        
-        if 'data' in data:
-            return data['data']
-        return None
-        
-    except Exception as e:
-        logger.error(f"Error fetching Twitter user info: {e}")
-        return None
 
-
-def ingest_twitter():
-    """Fetch Twitter mentions and metrics"""
-    logger.info("Starting Twitter ingestion...")
+def ingest_twitter(max_tweets=100, days_back=None):
+    """Fetch Twitter mentions using Apify (with fallback to Twitter API)
     
-    if not TWITTER_BEARER_TOKEN:
+    Args:
+        max_tweets: Maximum number of tweets to fetch (default: 100)
+        days_back: If specified, fetch tweets from this many days ago (for historical backfill)
+    """
+    logger.info(f"Starting Twitter ingestion (max_tweets={max_tweets}, days_back={days_back})...")
+    
+    use_twitter_api = False
+    
+    # Determine which API to use
+    if not APIFY_API_TOKEN:
+        logger.warning("Apify API token not configured, using Twitter API")
+        use_twitter_api = True
+    elif not TWITTER_BEARER_TOKEN:
         logger.warning("Twitter Bearer Token not configured")
         return
     
@@ -518,89 +515,202 @@ def ingest_twitter():
         monday, sunday = get_current_week_dates()
         today = datetime.now().date()
         
-        # Check if we already have a follower count from today (cache)
+        # Get existing tweet IDs from database to avoid duplicates
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("""
-            SELECT follower_count, created_at::date 
-            FROM social_media_daily_metrics 
-            WHERE platform = 'Twitter' 
-            AND date = %s
-        """, (today,))
-        result = cur.fetchone()
-        
-        follower_count = 0
-        fetch_new_follower_count = True
-        
-        # If we have a record from today, reuse the cached follower count
-        if result and result[1] == today:
-            follower_count = result[0]
-            fetch_new_follower_count = False
-            logger.info(f"Using cached follower count from today: {follower_count}")
-        
-        # Get existing tweet IDs from database to avoid duplicates
         cur.execute("""
             SELECT post_id FROM social_mentions 
             WHERE platform = 'Twitter'
         """)
         existing_tweet_ids = set(row[0] for row in cur.fetchall())
         logger.info(f"Found {len(existing_tweet_ids)} existing tweets in database")
-        
         cur.close()
         conn.close()
         
-        # Only fetch follower count if we don't have one from today
-        if fetch_new_follower_count:
-            ummatics_user = get_twitter_user_info("ummatics")
-            if ummatics_user and 'public_metrics' in ummatics_user:
-                follower_count = ummatics_user['public_metrics'].get('followers_count', 0)
-                logger.info(f"Fetched new follower count from API: {follower_count}")
+        all_tweets = []
+        
+        # Try Apify first, fall back to Twitter API if it fails
+        if not use_twitter_api and APIFY_API_TOKEN:
+            try:
+                logger.info("Attempting to use Apify Twitter Scraper...")
+                client = ApifyClient(APIFY_API_TOKEN)
+                
+                # Use quoted phrases for exact word matching (not substring)
+                search_queries = [
+                    '"ummatics" -from:ummatics',
+                    '"ummatic" -from:ummatics'
+                ]
+                
+                for search_query in search_queries:
+                    logger.info(f"Searching Twitter via Apify for: {search_query}")
+                    
+                    run_input = {
+                        "searchTerms": [search_query],
+                        "maxTweets": max_tweets // len(search_queries),
+                        "includeSearchTerms": False,
+                        "onlyImage": False,
+                        "onlyQuote": False,
+                        "onlyTwitterBlue": False,
+                        "onlyVerifiedUsers": False,
+                        "onlyVideo": False,
+                        "sort": "Latest",
+                    }
+                    
+                    if days_back:
+                        start_date = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
+                        end_date = datetime.now().strftime("%Y-%m-%d")
+                        # Use 'since' and 'until' parameters for date filtering
+                        run_input["since"] = start_date
+                        run_input["until"] = end_date
+                        logger.info(f"Fetching historical tweets from {start_date} to {end_date}")
+                    
+                    run = client.actor("61RPP7dywgiy0JPD0").call(run_input=run_input)
+                    
+                    # Fetch all data from Apify dataset
+                    dataset_items = list(client.dataset(run["defaultDatasetId"]).iterate_items())
+                    logger.info(f"Apify dataset returned {len(dataset_items)} items for query: {search_query}")
+                    
+                    # IMMEDIATELY log full data to file BEFORE processing (so we don't lose data on errors)
+                    if dataset_items:
+                        import json
+                        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                        log_file = f"/app/apify_data_{timestamp}_{search_query.replace(' ', '_').replace('-', '_')}.json"
+                        try:
+                            with open(log_file, 'w') as f:
+                                json.dump(dataset_items, f, indent=2, default=str)
+                            logger.info(f"✓ Saved {len(dataset_items)} tweets to {log_file}")
+                        except Exception as log_err:
+                            logger.error(f"Failed to save Apify data to file: {log_err}")
+                    
+                    # Add to all_tweets list with strict filtering
+                    for item in dataset_items:
+                        # Even with quoted search, Apify can return fuzzy matches
+                        # Apply strict word boundary check to filter out false positives
+                        text = item.get('text', '').lower()
+                        
+                        # Check for exact word matches using word boundaries
+                        import re
+                        has_ummatics = bool(re.search(r'\bummatics\b', text, re.IGNORECASE))
+                        has_ummatic = bool(re.search(r'\bummatic\b', text, re.IGNORECASE))
+                        
+                        if has_ummatics or has_ummatic:
+                            all_tweets.append(item)
+                        else:
+                            logger.debug(f"Filtered out tweet {item.get('id', 'unknown')} - no exact match for 'ummatics' or 'ummatic'")
+                
+                logger.info(f"Apify returned {len(all_tweets)} total tweets")
+                
+            except Exception as apify_error:
+                logger.warning(f"Apify failed: {apify_error}")
+                logger.info("Falling back to Twitter API...")
+                use_twitter_api = True
+                all_tweets = []
+        
+        # Use Twitter API (either as fallback or primary)
+        if use_twitter_api:
+            if days_back:
+                logger.warning("Twitter API does not support historical backfill - only recent tweets (7 days)")
+            
+            logger.info("Using Twitter API for tweet search...")
+            search_url = "https://api.twitter.com/2/tweets/search/recent"
+            headers = {"Authorization": f"Bearer {TWITTER_BEARER_TOKEN}"}
+            
+            params = {
+                "query": "(Ummatics OR ummatics OR Ummatic OR ummatic OR @ummatics) -from:ummatics",
+                "max_results": min(max_tweets, 100),
+                "tweet.fields": "created_at,public_metrics,author_id",
+                "expansions": "author_id",
+                "user.fields": "username"
+            }
+            
+            response = requests.get(search_url, headers=headers, params=params)
+            
+            if response.status_code == 429:
+                logger.warning("Twitter API rate limit exceeded")
+            elif response.status_code == 200:
+                data = response.json()
+                users = {user['id']: user for user in data.get('includes', {}).get('users', [])}
+                
+                for tweet in data.get('data', []):
+                    # Convert Twitter API format to Apify-like format for consistent processing
+                    author_id = tweet.get('author_id', '')
+                    author_username = users.get(author_id, {}).get('username', 'Unknown')
+                    
+                    all_tweets.append({
+                        'id': tweet['id'],
+                        'text': tweet.get('text', ''),
+                        'author': {'userName': author_username},
+                        'createdAt': tweet.get('created_at', ''),
+                        'url': f"https://twitter.com/{author_username}/status/{tweet['id']}",
+                        'likeCount': tweet.get('public_metrics', {}).get('like_count', 0),
+                        'retweetCount': tweet.get('public_metrics', {}).get('retweet_count', 0),
+                        'replyCount': tweet.get('public_metrics', {}).get('reply_count', 0)
+                    })
+                
+                logger.info(f"Twitter API returned {len(all_tweets)} tweets")
             else:
-                logger.warning("Could not fetch follower count from API, using 0 or cached value")
-                if result:
-                    follower_count = result[0]
-                    logger.info(f"Using previous follower count: {follower_count}")
-        else:
-            logger.info("Skip fetching folllower count since we have one from today...")
+                logger.error(f"Twitter API error: {response.status_code} - {response.text}")
         
-        # Search for mentions using multiple search terms (case-insensitive by default in Twitter API)
-        # Twitter API search is case-insensitive by default, but we'll include variations for clarity
-        search_url = "https://api.twitter.com/2/tweets/search/recent"
-        headers = {"Authorization": f"Bearer {TWITTER_BEARER_TOKEN}"}
+        # ALWAYS fetch follower count from Twitter API (not Apify)
         
-        params = {
-            "query": "(Ummatics OR ummatics OR Ummatic OR ummatic OR @ummatics) -from:ummatics",
-            "max_results": 100,
-            "tweet.fields": "created_at,public_metrics,author_id",
-            "expansions": "author_id",
-            "user.fields": "username"
-        }
+        # ALWAYS fetch follower count from Twitter API (not Apify)
+        follower_count = 0
+        if TWITTER_BEARER_TOKEN:
+            try:
+                user_url = "https://api.twitter.com/2/users/by/username/ummatics"
+                headers = {"Authorization": f"Bearer {TWITTER_BEARER_TOKEN}"}
+                params = {"user.fields": "public_metrics"}
+                response = requests.get(user_url, headers=headers, params=params)
+                
+                if response.status_code == 200:
+                    user_data = response.json()
+                    if 'data' in user_data and 'public_metrics' in user_data['data']:
+                        follower_count = user_data['data']['public_metrics'].get('followers_count', 0)
+                        logger.info(f"Fetched follower count from Twitter API: {follower_count}")
+                elif response.status_code == 429:
+                    logger.warning("Twitter API rate limit for user lookup")
+                else:
+                    logger.warning(f"Could not fetch follower count: HTTP {response.status_code}")
+            except Exception as e:
+                logger.warning(f"Error fetching follower count from Twitter API: {e}")
         
-        response = requests.get(search_url, headers=headers, params=params)
+        # Fallback to previous follower count if API fails
+        if follower_count == 0:
+            try:
+                user_url = "https://api.twitter.com/2/users/by/username/ummatics"
+                headers = {"Authorization": f"Bearer {TWITTER_BEARER_TOKEN}"}
+                params = {"user.fields": "public_metrics"}
+                response = requests.get(user_url, headers=headers, params=params)
+                
+                if response.status_code == 200:
+                    user_data = response.json()
+                    if 'data' in user_data and 'public_metrics' in user_data['data']:
+                        follower_count = user_data['data']['public_metrics'].get('followers_count', 0)
+                        logger.info(f"Fetched follower count from Twitter API: {follower_count}")
+                elif response.status_code == 429:
+                    logger.warning("Twitter API rate limit for user lookup")
+                else:
+                    logger.warning(f"Could not fetch follower count: HTTP {response.status_code}")
+            except Exception as e:
+                logger.warning(f"Error fetching follower count from Twitter API: {e}")
         
-        # Handle rate limiting gracefully
-        if response.status_code == 429:
-            logger.warning("Twitter API rate limit exceeded. Saving follower count only.")
-            logger.info("Rate limit will reset in ~15 minutes. Mentions will be collected in next run.")
-            # Still save follower count even if we can't get mentions
+        # Fallback to previous follower count if API fails
+        if follower_count == 0:
             conn = get_db_connection()
             cur = conn.cursor()
             cur.execute("""
-                INSERT INTO social_media_daily_metrics (date, platform, follower_count, mentions_count, engagement_rate)
-                VALUES (%s, %s, %s, %s, %s)
-                ON CONFLICT (date, platform) 
-                DO UPDATE SET 
-                    follower_count = EXCLUDED.follower_count
-            """, (today, 'Twitter', follower_count, 0, 0))
-            conn.commit()
+                SELECT follower_count FROM social_media_daily_metrics 
+                WHERE platform = 'Twitter' 
+                ORDER BY date DESC LIMIT 1
+            """)
+            result = cur.fetchone()
+            if result and result[0] > 0:
+                follower_count = result[0]
+                logger.info(f"Using previous follower count: {follower_count}")
             cur.close()
             conn.close()
-            logger.info(f"Twitter follower count saved: {follower_count}")
-            return
         
-        response.raise_for_status()
-        data = response.json()
-        
+        # Process tweets and save to database
         conn = get_db_connection()
         cur = conn.cursor()
         
@@ -609,56 +719,76 @@ def ingest_twitter():
         skipped_own_posts = 0
         total_engagement = 0
         
-        if 'data' in data:
-            users = {user['id']: user for user in data.get('includes', {}).get('users', [])}
-            
-            for tweet in data['data']:
-                try:
-                    tweet_id = tweet['id']
-                    author_id = tweet.get('author_id', '')
-                    author_username = users.get(author_id, {}).get('username', 'Unknown')
-                    
-                    # Skip if this is a post from @ummatics itself
-                    if author_username.lower() == 'ummatics':
-                        skipped_own_posts += 1
-                        logger.debug(f"Skipping own post: {tweet_id}")
-                        continue
-                    
-                    # Skip if we already have this tweet in the database
-                    if tweet_id in existing_tweet_ids:
-                        skipped_duplicates += 1
-                        logger.debug(f"Skipping duplicate tweet: {tweet_id}")
-                        continue
-                    
-                    content = tweet.get('text', '')
-                    post_url = f"https://twitter.com/{author_username}/status/{tweet_id}"
-                    posted_at = datetime.fromisoformat(tweet['created_at'].replace('Z', '+00:00'))
-                    
-                    metrics = tweet.get('public_metrics', {})
-                    likes = metrics.get('like_count', 0)
-                    retweets = metrics.get('retweet_count', 0)
-                    replies = metrics.get('reply_count', 0)
-                    
-                    total_engagement += likes + retweets + replies
-                    
-                    # Analyze sentiment using TextBlob (fast, low memory)
-                    sentiment, sentiment_score = analyze_sentiment_textblob(content)
-                    
-                    # Insert social mention
-                    cur.execute("""
-                        INSERT INTO social_mentions 
-                        (week_start_date, platform, post_id, author, content, post_url, posted_at, likes, retweets, replies, sentiment, sentiment_score, sentiment_analyzed_at)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (post_id) DO NOTHING
-                    """, (monday, 'Twitter', tweet_id, author_username, content, post_url, posted_at, likes, retweets, replies, sentiment, sentiment_score, datetime.now()))
-                    
-                    if cur.rowcount > 0:
-                        new_mentions += 1
-                        logger.info(f"Added new mention from @{author_username}: {tweet_id} (sentiment: {sentiment})")
-                        
-                except Exception as e:
-                    logger.error(f"Error processing tweet: {e}")
+        for tweet in all_tweets:
+            try:
+                # Extract tweet data
+                tweet_id = tweet.get('id', '')
+                if not tweet_id:
                     continue
+                
+                # Get author info
+                author_info = tweet.get('author', {})
+                author_username = author_info.get('userName', 'Unknown')
+                
+                # Skip if this is from @ummatics itself (double check)
+                if author_username.lower() == 'ummatics':
+                    skipped_own_posts += 1
+                    logger.debug(f"Skipping own post: {tweet_id}")
+                    continue
+                
+                # Skip if we already have this tweet
+                if tweet_id in existing_tweet_ids:
+                    skipped_duplicates += 1
+                    logger.debug(f"Skipping duplicate tweet: {tweet_id}")
+                    continue
+                
+                # Extract tweet content and metadata
+                content = tweet.get('text', '')
+                post_url = tweet.get('url', f"https://twitter.com/{author_username}/status/{tweet_id}")
+                
+                # Parse created date - handle multiple formats
+                created_at = tweet.get('createdAt', '')
+                if created_at:
+                    try:
+                        # Try ISO format first (Apify format)
+                        posted_at = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                    except (ValueError, TypeError):
+                        try:
+                            # Try Twitter's standard format: "Thu Mar 04 04:48:05 +0000 2010"
+                            from datetime import datetime as dt
+                            posted_at = dt.strptime(created_at, '%a %b %d %H:%M:%S %z %Y')
+                        except (ValueError, TypeError):
+                            # Fallback to now if all parsing fails
+                            logger.warning(f"Could not parse date '{created_at}' for tweet {tweet_id}, using current time")
+                            posted_at = datetime.now()
+                else:
+                    posted_at = datetime.now()
+                
+                # Extract engagement metrics
+                likes = tweet.get('likeCount', 0)
+                retweets = tweet.get('retweetCount', 0)
+                replies = tweet.get('replyCount', 0)
+                
+                total_engagement += likes + retweets + replies
+                
+                # Analyze sentiment using TextBlob
+                sentiment, sentiment_score = analyze_sentiment_textblob(content)
+                
+                # Insert into database
+                cur.execute("""
+                    INSERT INTO social_mentions 
+                    (week_start_date, platform, post_id, author, content, post_url, posted_at, likes, retweets, replies, sentiment, sentiment_score, sentiment_analyzed_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (post_id) DO NOTHING
+                """, (monday, 'Twitter', tweet_id, author_username, content, post_url, posted_at, likes, retweets, replies, sentiment, sentiment_score, datetime.now()))
+                
+                if cur.rowcount > 0:
+                    new_mentions += 1
+                    logger.info(f"Added new mention from @{author_username}: {tweet_id} (sentiment: {sentiment})")
+                    
+            except Exception as e:
+                logger.error(f"Error processing tweet: {e}")
+                continue
         
         engagement_rate = (total_engagement / max(new_mentions, 1)) if new_mentions > 0 else 0
         
@@ -685,6 +815,8 @@ def ingest_twitter():
         
     except Exception as e:
         logger.error(f"Error in Twitter ingestion: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
 
 
 def ingest_google_analytics():
