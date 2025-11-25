@@ -546,7 +546,7 @@ def ingest_twitter(max_tweets=100, days_back=None):
                     
                     run_input = {
                         "searchTerms": [search_query],
-                        "maxTweets": max_tweets,
+                        "maxItems": max_tweets,
                         "includeSearchTerms": False,
                         "onlyImage": False,
                         "onlyQuote": False,
