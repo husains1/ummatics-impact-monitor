@@ -199,10 +199,87 @@ else:
    - Check logs at each layer
    - Verify assumptions with curl/direct tests
 
-## User guidelines
+---
 
-1. ** Always re-deploy the front-end on AWS after making any front-end code changes
-2. ** Use full npm rebuild without cache locally and then push to ECR
-3. ** Use ECR to deploy the front-end on AWS
-4. ** Ensure previous versions of the front-end are cleaned up and no longer available on the EC2 node
-5. ** Always confirm the deployment by connecting to the website URL
+## Backend Code Deployment Pitfall (Nov 25, 2025)
+
+### Problem
+Made backend code changes locally, built Docker image, pushed to ECR, but the changes didn't take effect on EC2. Falsely reported the fix was deployed when it wasn't.
+
+### Root Cause
+The `docker-compose.yml` on EC2 uses `build: ./backend` instead of pulling from ECR. When I ran:
+```bash
+docker compose build --no-cache api  # Built using LOCAL code on EC2
+docker compose up -d api
+```
+
+This rebuilt the container using the **old code still on the EC2 instance** (before `git pull`), not the updated code I had pushed to GitHub.
+
+### What I Missed
+1. **Forgot to sync code to EC2 first**: Made changes locally, committed to git, but EC2 still had old code
+2. **Docker Compose Build Behavior**: `docker compose build` uses the local filesystem, NOT ECR images
+3. **Premature Success Declaration**: Pushed to ECR but that image was never used
+4. **Failed to Verify**: Didn't check if the actual code changes were present in the running container
+
+### Correct Deployment Process for Backend Changes
+
+**Step 1: Sync Code to EC2**
+```bash
+# On EC2, pull latest code from GitHub
+ssh ... 'cd /home/ubuntu/ummatics-impact-monitor && git pull origin main'
+```
+
+**Step 2: Handle Local Changes**
+```bash
+# If there are local modifications on EC2, stash them first
+ssh ... 'cd /home/ubuntu/ummatics-impact-monitor && git stash && git pull origin main'
+```
+
+**Step 3: Rebuild Container with Fresh Code**
+```bash
+# Now rebuild using the updated code
+ssh ... 'cd /home/ubuntu/ummatics-impact-monitor && docker compose build --no-cache api && docker compose up -d api'
+```
+
+**Step 4: Verify the Fix**
+```bash
+# Check that the code change is actually in the running container
+ssh ... 'grep -A 5 "specific code pattern" /home/ubuntu/ummatics-impact-monitor/backend/api.py'
+
+# Test the API endpoint to confirm behavior changed
+curl -s -H "Authorization: Bearer token" "http://host/api/endpoint" | python3 -c "verification script"
+```
+
+### Alternative: Use ECR Images for Backend Too
+
+To make backend deployments consistent with frontend:
+
+1. **Update docker-compose.yml on EC2** to use ECR image instead of build
+2. **Push backend changes**: Build locally → Tag → Push to ECR → Pull on EC2
+3. **Advantage**: No need to sync code to EC2, just pull new image
+
+### Key Takeaways
+- **Code must be on EC2 before building**: `docker compose build` uses local files, not ECR
+- **Git pull BEFORE rebuild**: Always sync code first when using `build:` in docker-compose
+- **Test what you deploy**: Don't assume it worked; verify the actual behavior changed
+- **Two deployment methods**: Either sync code + rebuild, OR push image + pull
+- **Never trust "it should work"**: Always verify with actual API tests
+- **Check container contents**: Use `docker exec` or SSH to verify files if unsure
+
+---
+
+## User Guidelines
+
+### Frontend Deployment
+1. Always re-deploy the frontend on AWS after making any frontend code changes
+2. Use full npm rebuild without cache locally and then push to ECR
+3. Use ECR to deploy the frontend on AWS
+4. Ensure previous versions of the frontend are cleaned up and no longer available on the EC2 node
+5. Always confirm the deployment by connecting to the website URL
+
+### Backend Deployment
+1. **CRITICAL**: Pull latest code to EC2 BEFORE rebuilding containers (`git pull origin main`)
+2. Handle any local changes on EC2 with `git stash` if needed
+3. Rebuild with `--no-cache` flag to ensure fresh build
+4. **ALWAYS VERIFY**: Test the API endpoint to confirm changes took effect
+5. Don't trust the build success message - verify actual behavior
