@@ -223,47 +223,48 @@ This rebuilt the container using the **old code still on the EC2 instance** (bef
 
 ### Correct Deployment Process for Backend Changes
 
-**Step 1: Sync Code to EC2**
+**CRITICAL: NO GIT OPERATIONS ON EC2 - Credentials must stay local**
+
+**Method 1: Copy Files via SSH (Recommended for Quick Fixes)**
 ```bash
-# On EC2, pull latest code from GitHub
-ssh ... 'cd /home/ubuntu/ummatics-impact-monitor && git pull origin main'
+# Copy changed backend files from local to EC2
+scp -i ~/.ssh/ummatics-monitor-key.pem backend/api.py ubuntu@3.226.110.16:/home/ubuntu/ummatics-impact-monitor/backend/
+scp -i ~/.ssh/ummatics-monitor-key.pem backend/ingestion.py ubuntu@3.226.110.16:/home/ubuntu/ummatics-impact-monitor/backend/
+
+# Rebuild and restart container on EC2
+ssh -i ~/.ssh/ummatics-monitor-key.pem ubuntu@3.226.110.16 'cd /home/ubuntu/ummatics-impact-monitor && docker compose build --no-cache api && docker compose up -d api'
 ```
 
-**Step 2: Handle Local Changes**
+**Method 2: Use ECR for Backend (Recommended for Production)**
 ```bash
-# If there are local modifications on EC2, stash them first
-ssh ... 'cd /home/ubuntu/ummatics-impact-monitor && git stash && git pull origin main'
+# Build backend locally
+cd /home/tahir/ummatics-impact-monitor
+docker build -t ummatics-backend:latest -f backend/Dockerfile backend/
+
+# Tag and push to ECR
+docker tag ummatics-backend:latest 182758038500.dkr.ecr.us-east-1.amazonaws.com/ummatics-impact-monitor:backend-latest
+aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 182758038500.dkr.ecr.us-east-1.amazonaws.com
+docker push 182758038500.dkr.ecr.us-east-1.amazonaws.com/ummatics-impact-monitor:backend-latest
+
+# Pull and restart on EC2
+ssh -i ~/.ssh/ummatics-monitor-key.pem ubuntu@3.226.110.16 'cd /home/ubuntu/ummatics-impact-monitor && docker compose pull api && docker compose up -d api'
 ```
 
-**Step 3: Rebuild Container with Fresh Code**
+**Verification**
 ```bash
-# Now rebuild using the updated code
-ssh ... 'cd /home/ubuntu/ummatics-impact-monitor && docker compose build --no-cache api && docker compose up -d api'
-```
-
-**Step 4: Verify the Fix**
-```bash
-# Check that the code change is actually in the running container
-ssh ... 'grep -A 5 "specific code pattern" /home/ubuntu/ummatics-impact-monitor/backend/api.py'
+# Verify container is running with new code
+ssh -i ~/.ssh/ummatics-monitor-key.pem ubuntu@3.226.110.16 'docker compose ps api'
 
 # Test the API endpoint to confirm behavior changed
-curl -s -H "Authorization: Bearer token" "http://host/api/endpoint" | python3 -c "verification script"
+curl -s -H "Authorization: Bearer token" "http://3.226.110.16:5000/api/endpoint" | python3 -c "verification script"
 ```
 
-### Alternative: Use ECR Images for Backend Too
-
-To make backend deployments consistent with frontend:
-
-1. **Update docker-compose.yml on EC2** to use ECR image instead of build
-2. **Push backend changes**: Build locally → Tag → Push to ECR → Pull on EC2
-3. **Advantage**: No need to sync code to EC2, just pull new image
-
 ### Key Takeaways
-- **Code must be on EC2 before building**: `docker compose build` uses local files, not ECR
-- **Git pull BEFORE rebuild**: Always sync code first when using `build:` in docker-compose
-- **Test what you deploy**: Don't assume it worked; verify the actual behavior changed
-- **Two deployment methods**: Either sync code + rebuild, OR push image + pull
-- **Never trust "it should work"**: Always verify with actual API tests
+- **NEVER use git on EC2**: No git pull, git clone, git commit, or git push - keep credentials local
+- **Two deployment methods**: Copy files via SCP, OR build locally + push to ECR
+- **Frontend always uses ECR**: Build locally → Push to ECR → Pull on EC2
+- **Backend can use either**: SCP for quick fixes, ECR for production deployments
+- **Always verify**: Test API endpoints after deployment to confirm changes took effect
 - **Check container contents**: Use `docker exec` or SSH to verify files if unsure
 
 ---
@@ -271,26 +272,25 @@ To make backend deployments consistent with frontend:
 ## User Guidelines
 
 ### Frontend Deployment
-1. Always re-deploy the frontend on AWS after making any frontend code changes
-2. Use full npm rebuild without cache locally and then push to ECR
-3. Use ECR to deploy the frontend on AWS
-4. Ensure previous versions of the frontend are cleaned up and no longer available on the EC2 node
-5. Always confirm the deployment by connecting to the website URL
+1. Build frontend locally with `npm run build`
+2. Build Docker image locally
+3. Tag and push to ECR
+4. Pull from ECR on EC2 and restart container
+5. Always verify deployment by checking the website URL
 
-### Backend Deployment
-1. **CRITICAL**: Pull latest code to EC2 BEFORE rebuilding containers (`git pull origin main`)
-2. Handle any local changes on EC2 with `git stash` if needed
+### Backend Deployment  
+1. **Method 1 (SCP)**: Copy changed files via SCP, rebuild container on EC2
+2. **Method 2 (ECR)**: Build Docker image locally, push to ECR, pull on EC2
 3. Rebuild with `--no-cache` flag to ensure fresh build
-4. **ALWAYS VERIFY**: Test the API endpoint to confirm changes took effect
-5. Don't trust the build success message - verify actual behavior
+4. **ALWAYS VERIFY**: Test API endpoints to confirm changes took effect
+5. Never use git operations on EC2 - keep credentials local
 
 ### Security and Resource Guidelines
-1. **NEVER run git commit/push from EC2**: Your credentials should NOT be stored on EC2
-   - EC2 can pull code for deployment (`git pull` is OK)
-   - EC2 should NEVER push changes or commit code
-   - Keep git write credentials local to your development machine
-   - Use SSH to EC2 for deployment only, not for development workflow
-   - Note: `git pull` for deployment is acceptable, but committing/pushing is not
+1. **NEVER run ANY git operations on EC2**: Your credentials should NOT be stored on EC2
+   - No git pull, git clone, git commit, git push, or git checkout
+   - EC2 should only receive code via SCP or Docker images from ECR
+   - Keep ALL git credentials on your local development machine only
+   - Use SSH/SCP for file transfer, ECR for container images
 2. **NEVER run ingestion.py locally**: Data ingestion consumes rate-limited API resources
    - Twitter API, Reddit API, etc. have daily/hourly limits
    - Running locally wastes quota and may exhaust limits needed for production
