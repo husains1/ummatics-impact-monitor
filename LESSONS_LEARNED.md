@@ -336,3 +336,62 @@ monthlyData[monthKey] = {
 - **Chart library behavior**: Most libraries (Recharts, Chart.js) treat `null` as gaps when `connectNulls={false}`
 - **Maintain full range**: X-axis range is determined by data array length, not by presence of Y values
 - **Data integrity**: Only show data you actually have; don't extrapolate or backfill misleadingly
+
+---
+
+## Reddit Data Quality Issues (Nov 25, 2025)
+
+### Problem 1: Followers Shown for Reddit (Not Relevant)
+Reddit doesn't have a "follower count" concept like Twitter. The database had follower_count set to 0 for Reddit, but the frontend was still displaying the "Followers" card and follower line in charts.
+
+### Solution
+- Removed follower count card display from Reddit tab
+- Removed follower count and engagement rate lines from Reddit metrics chart
+- Reddit tab now only shows mentions count (the relevant metric)
+
+### Problem 2: Sentiment Datapoints with Zero Values
+Charts showed sentiment data for dates with no actual sentiment scores (average_sentiment_score = 0), creating misleading baseline at zero.
+
+### Root Cause
+Backend creates sentiment metric rows even when there are no tweets for that day, resulting in 0 values. Frontend was not filtering these out.
+
+### Solution
+Filter out zero sentiment values when displaying charts:
+```javascript
+.filter(s => s._date && (s.avg_sentiment !== undefined && s.avg_sentiment !== null) && s.avg_sentiment !== 0)
+```
+
+### Problem 3: HTML Tags Showing in Reddit Content
+Reddit RSS feeds contain HTML-encoded entities (`&lt;`, `&gt;`, `&amp;`) and HTML tags (`<a>`, `<p>`, etc.) that were being stored and displayed as raw text.
+
+### Root Cause
+Reddit RSS feed content includes HTML formatting that wasn't being decoded or stripped before storage.
+
+### Solution
+Backend (ingestion.py):
+```python
+import html
+
+# Decode HTML entities like &lt; &gt; &amp;
+decoded_summary = html.unescape(full_summary)
+# Remove HTML tags
+clean_summary = re.sub(r'<[^>]+>', '', decoded_summary)
+content = clean_summary[:1000]
+```
+
+Frontend (App.jsx) - fallback for existing data:
+```javascript
+<p dangerouslySetInnerHTML={{ 
+  __html: mention.content
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&').replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'").replace(/<[^>]+>/g, '') 
+}}></p>
+```
+
+### Key Takeaways
+- **Platform-specific metrics**: Don't show metrics that don't apply to a platform (Reddit has no followers)
+- **Filter zero vs null**: `0` can be a real value OR placeholder; context matters
+- **RSS feeds often contain HTML**: Always decode entities and strip tags from RSS content
+- **Clean data at ingestion**: Better to clean data when storing than when displaying
+- **Dual cleanup approach**: Clean at ingestion for new data, handle legacy data in frontend

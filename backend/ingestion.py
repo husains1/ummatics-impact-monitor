@@ -11,6 +11,7 @@ import re
 import json
 from textblob import TextBlob
 from apify_client import ApifyClient
+import html
 from google.analytics.data_v1beta import BetaAnalyticsDataClient
 from google.analytics.data_v1beta.types import (
     DateRange,
@@ -414,8 +415,13 @@ def ingest_reddit():
                         if 'ummatics' not in combined_text and 'ummatic' not in combined_text:
                             continue  # Skip posts that don't mention ummatics/ummatic
 
-                        # Now trim content for storage (after filtering)
-                        content = full_summary[:1000]
+                        # Decode HTML entities and strip tags before trimming
+                        # First decode HTML entities like &lt; &gt; &amp;
+                        decoded_summary = html.unescape(full_summary)
+                        # Then remove HTML tags
+                        clean_summary = re.sub(r'<[^>]+>', '', decoded_summary)
+                        # Now trim content for storage (after filtering and cleaning)
+                        content = clean_summary[:1000]
 
                         # Parse published date
                         if hasattr(entry, 'published_parsed') and entry.published_parsed:

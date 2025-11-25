@@ -758,20 +758,7 @@ function RedditTab({ data, sentimentData, page, setPage }) {
 
   return (
     <div className="space-y-6">
-      {/* Follower Count Cards - Note: Reddit doesn't have follower counts */}
-      {Object.keys(latestFollowers).length > 0 && (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {Object.entries(latestFollowers).map(([platform, data]) => (
-            <div key={platform} className="bg-white p-6 rounded-lg shadow">
-              <h3 className="text-lg font-semibold text-gray-900 mb-2">{platform} Followers</h3>
-              <p className="text-4xl font-bold text-blue-600">{data.count.toLocaleString()}</p>
-              <p className="text-sm text-gray-500 mt-2">
-                Updated {new Date(data.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} at {new Date(data.created_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
-              </p>
-            </div>
-          ))}
-        </div>
-      )}
+      {/* Reddit doesn't have follower counts - removed this section */}
 
       {/* Sentiment Trend (daily averages) */}
       {sentimentData && (() => {
@@ -792,7 +779,7 @@ function RedditTab({ data, sentimentData, page, setPage }) {
         const sentimentSeries = raw.map(item => ({
           _date: item.date || item.week_start_date || item._date,
           avg_sentiment: (item.average_sentiment_score ?? item.avg_score ?? item.avg_sentiment ?? item.average_score)
-        })).filter(s => s._date && (s.avg_sentiment !== undefined && s.avg_sentiment !== null)).slice()
+        })).filter(s => s._date && (s.avg_sentiment !== undefined && s.avg_sentiment !== null) && s.avg_sentiment !== 0).slice()
 
         if (!sentimentSeries.length) return null
 
@@ -827,13 +814,10 @@ function RedditTab({ data, sentimentData, page, setPage }) {
                 dataKey="_date"
                 tickFormatter={(date) => new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
               />
-              <YAxis yAxisId="left" />
-              <YAxis yAxisId="right" orientation="right" domain={[0, 'auto']} />
+              <YAxis domain={[0, 'auto']} />
               <Tooltip />
               <Legend />
-              <Line yAxisId="left" type="monotone" dataKey="follower_count" stroke="#3b82f6" name="Followers" strokeWidth={2} />
-              <Line yAxisId="right" type="monotone" dataKey="mentions_count" stroke="#10b981" name="Mentions" strokeWidth={2} />
-              <Line yAxisId="right" type="monotone" dataKey="engagement_rate" stroke="#f59e0b" name="Engagement Rate" strokeWidth={2} />
+              <Line type="monotone" dataKey="mentions_count" stroke="#10b981" name="Mentions" strokeWidth={2} />
             </LineChart>
           </ResponsiveContainer>
         </div>
@@ -904,7 +888,7 @@ function RedditTab({ data, sentimentData, page, setPage }) {
                             <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${badgeColor} ml-3`}>{sentimentLabel}</span>
                           )}
                         </div>
-                        <p className="text-gray-700 mt-1">{mention.content}</p>
+                        <p className="text-gray-700 mt-1" dangerouslySetInnerHTML={{ __html: mention.content.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/<[^>]+>/g, '') }}></p>
                         {mention.post_url && (
                           <a
                             href={mention.post_url}
