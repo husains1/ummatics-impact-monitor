@@ -283,3 +283,56 @@ To make backend deployments consistent with frontend:
 3. Rebuild with `--no-cache` flag to ensure fresh build
 4. **ALWAYS VERIFY**: Test the API endpoint to confirm changes took effect
 5. Don't trust the build success message - verify actual behavior
+
+### Security and Resource Guidelines
+1. **NEVER run git checkout/commit/push from EC2**: Your credentials should NOT be stored on EC2
+   - EC2 should only pull code, never push changes
+   - Keep git credentials local to your development machine
+   - Use SSH to EC2 for deployment only, not for development workflow
+2. **NEVER run ingestion.py locally**: Data ingestion consumes rate-limited API resources
+   - Twitter API, Reddit API, etc. have daily/hourly limits
+   - Running locally wastes quota and may exhaust limits needed for production
+   - Always run ingestion from the scheduled production environment (EC2)
+   - Exception: Testing with small dataset or mock data is acceptable
+
+---
+
+## Chart Data Gaps for Unavailable Historical Data (Nov 25, 2025)
+
+### Problem
+Follower counts and engagement rates before November 2025 are not real historical data - they are backfilled using current values. Displaying them on charts is misleading, but we still want to show the full historical range for mentions data.
+
+### Challenge
+How to hide follower/engagement data before Nov 2025 while maintaining the full date range on charts (2009-2025)?
+
+### Solution
+Set unavailable data to `null` instead of `0`, and configure chart library to NOT connect across null values:
+
+```javascript
+// In data processing - check if before Nov 2025
+const isBeforeNov2025 = date < new Date('2025-11-01')
+
+// Set to null instead of 0
+monthlyData[monthKey] = {
+  follower_count: isBeforeNov2025 ? null : metric.follower_count,
+  engagement_rate: isBeforeNov2025 ? null : 0,
+  mentions_count: 0  // Always include mentions
+}
+
+// In Recharts configuration - prevent connecting across gaps
+<Line dataKey="follower_count" connectNulls={false} />
+<Line dataKey="engagement_rate" connectNulls={false} />
+```
+
+### Result
+- X-axis shows full date range (2009 to present)
+- Follower count line only appears from Nov 2025 onwards (gap before)
+- Engagement rate line only appears from Nov 2025 onwards (gap before)
+- Mentions line shows continuously for all historical data
+- No misleading "fake" historical follower/engagement data
+
+### Key Takeaways
+- **Use `null` for unavailable data, not `0`**: `0` is a valid data point, `null` means "no data"
+- **Chart library behavior**: Most libraries (Recharts, Chart.js) treat `null` as gaps when `connectNulls={false}`
+- **Maintain full range**: X-axis range is determined by data array length, not by presence of Y values
+- **Data integrity**: Only show data you actually have; don't extrapolate or backfill misleadingly
