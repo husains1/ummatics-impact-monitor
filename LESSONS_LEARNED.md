@@ -285,10 +285,12 @@ To make backend deployments consistent with frontend:
 5. Don't trust the build success message - verify actual behavior
 
 ### Security and Resource Guidelines
-1. **NEVER run git checkout/commit/push from EC2**: Your credentials should NOT be stored on EC2
-   - EC2 should only pull code, never push changes
-   - Keep git credentials local to your development machine
+1. **NEVER run git commit/push from EC2**: Your credentials should NOT be stored on EC2
+   - EC2 can pull code for deployment (`git pull` is OK)
+   - EC2 should NEVER push changes or commit code
+   - Keep git write credentials local to your development machine
    - Use SSH to EC2 for deployment only, not for development workflow
+   - Note: `git pull` for deployment is acceptable, but committing/pushing is not
 2. **NEVER run ingestion.py locally**: Data ingestion consumes rate-limited API resources
    - Twitter API, Reddit API, etc. have daily/hourly limits
    - Running locally wastes quota and may exhaust limits needed for production
