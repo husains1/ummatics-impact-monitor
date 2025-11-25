@@ -391,12 +391,16 @@ def ingest_reddit():
                         title = entry.get('title', '')
                         author = entry.get('author', 'Unknown')
                         post_url = entry.get('link', '')
-                        content = entry.get('summary', '')[:1000]  # Limit content length
+                        full_summary = entry.get('summary', '')
 
                         # Filter: Only include posts containing "ummatics" or "ummatic" (case insensitive)
-                        combined_text = f"{title} {content}".lower()
+                        # Check FULL summary first before trimming
+                        combined_text = f"{title} {full_summary}".lower()
                         if 'ummatics' not in combined_text and 'ummatic' not in combined_text:
                             continue  # Skip posts that don't mention ummatics/ummatic
+
+                        # Now trim content for storage (after filtering)
+                        content = full_summary[:1000]
 
                         # Parse published date
                         if hasattr(entry, 'published_parsed') and entry.published_parsed:
