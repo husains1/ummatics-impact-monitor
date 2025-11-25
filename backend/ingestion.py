@@ -413,9 +413,9 @@ def ingest_reddit():
                         upvotes = 0
                         comments = 0
 
-                        # Analyze sentiment using transformer (same as Twitter for consistency)
+                        # Analyze sentiment using TextBlob (fast, low memory)
                         sentiment_text = f"{title} {content}"
-                        sentiment, sentiment_score = analyze_sentiment(sentiment_text)
+                        sentiment, sentiment_score = analyze_sentiment_textblob(sentiment_text)
 
                         # Add small delay every 5 posts to avoid overloading
                         if (entry_index + 1) % 5 == 0:
@@ -641,8 +641,8 @@ def ingest_twitter():
                     
                     total_engagement += likes + retweets + replies
                     
-                    # Analyze sentiment
-                    sentiment, sentiment_score = analyze_sentiment(content)
+                    # Analyze sentiment using TextBlob (fast, low memory)
+                    sentiment, sentiment_score = analyze_sentiment_textblob(content)
                     
                     # Insert social mention
                     cur.execute("""

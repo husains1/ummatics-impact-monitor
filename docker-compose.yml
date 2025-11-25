@@ -30,8 +30,6 @@ services:
       DB_NAME: ${DB_NAME:-ummatics_monitor}
       DB_USER: ${DB_USER:-postgres}
       DB_PASSWORD: ${DB_PASSWORD:-postgres}
-      USE_TRANSFORMER: "1"
-      TRANSFORMER_SENTIMENT_MODEL: cardiffnlp/twitter-roberta-base-sentiment
       DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:-changeme}
       GOOGLE_ALERTS_RSS_URL: ${GOOGLE_ALERTS_RSS_URL}
       REDDIT_RSS_URLS: ${REDDIT_RSS_URLS}
@@ -63,8 +61,6 @@ services:
       DB_NAME: ${DB_NAME:-ummatics_monitor}
       DB_USER: ${DB_USER:-postgres}
       DB_PASSWORD: ${DB_PASSWORD:-postgres}
-      USE_TRANSFORMER: "1"
-      TRANSFORMER_SENTIMENT_MODEL: cardiffnlp/twitter-roberta-base-sentiment
       GOOGLE_ALERTS_RSS_URL: ${GOOGLE_ALERTS_RSS_URL}
       REDDIT_RSS_URLS: ${REDDIT_RSS_URLS}
       TWITTER_BEARER_TOKEN: ${TWITTER_BEARER_TOKEN}
