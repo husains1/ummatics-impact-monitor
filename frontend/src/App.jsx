@@ -341,10 +341,13 @@ function TwitterTab({ data, sentimentData, page, setPage }) {
     const date = new Date(metric._date)
     const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
     
+    // Check if date is before Nov 2025 (follower/engagement data not available)
+    const isBeforeNov2025 = date < new Date('2025-11-01')
+    
     if (!monthlyData[monthKey]) {
       monthlyData[monthKey] = {
         month: monthKey,
-        follower_count: metric.follower_count,
+        follower_count: isBeforeNov2025 ? null : metric.follower_count,
         mentions_count: 0,
         engagement_rate: 0,
         count: 0,
@@ -352,8 +355,8 @@ function TwitterTab({ data, sentimentData, page, setPage }) {
       }
     }
     
-    // Use most recent follower count for the month
-    if (new Date(metric._date) > new Date(monthlyData[monthKey].latest_date)) {
+    // Use most recent follower count for the month (only for Nov 2025+)
+    if (!isBeforeNov2025 && new Date(metric._date) > new Date(monthlyData[monthKey].latest_date)) {
       monthlyData[monthKey].follower_count = metric.follower_count
       monthlyData[monthKey].latest_date = metric._date
     }
@@ -363,9 +366,14 @@ function TwitterTab({ data, sentimentData, page, setPage }) {
     monthlyData[monthKey].count += 1
   })
 
-  // Calculate average engagement rate per month
+  // Calculate average engagement rate per month, set to null for pre-Nov 2025
   Object.values(monthlyData).forEach(month => {
-    month.engagement_rate = month.engagement_rate / month.count
+    const date = new Date(month.month + '-01')
+    if (date < new Date('2025-11-01')) {
+      month.engagement_rate = null
+    } else {
+      month.engagement_rate = month.engagement_rate / month.count
+    }
   })
 
   const monthlyMetrics = Object.values(monthlyData).sort((a, b) => a.month.localeCompare(b.month))
@@ -524,9 +532,9 @@ function TwitterTab({ data, sentimentData, page, setPage }) {
               <YAxis yAxisId="right" orientation="right" domain={[0, 'auto']} />
               <Tooltip />
               <Legend />
-              <Line yAxisId="left" type="monotone" dataKey="follower_count" stroke="#3b82f6" name="Followers" strokeWidth={2} />
+              <Line yAxisId="left" type="monotone" dataKey="follower_count" stroke="#3b82f6" name="Followers" strokeWidth={2} connectNulls={false} />
               <Line yAxisId="right" type="monotone" dataKey="mentions_count" stroke="#10b981" name="Mentions" strokeWidth={2} />
-              <Line yAxisId="right" type="monotone" dataKey="engagement_rate" stroke="#f59e0b" name="Engagement Rate" strokeWidth={2} />
+              <Line yAxisId="right" type="monotone" dataKey="engagement_rate" stroke="#f59e0b" name="Engagement Rate (%)" strokeWidth={2} connectNulls={false} />
             </LineChart>
           </ResponsiveContainer>
         </div>
