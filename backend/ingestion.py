@@ -544,12 +544,9 @@ def ingest_twitter(max_tweets=100, days_back=None):
                 for search_query in search_queries:
                     logger.info(f"Searching Twitter via Apify for: {search_query}")
                     
-                    # Apify often ignores maxTweets, so we set it very low and add timeout
-                    tweets_per_query = 20  # Very conservative to prevent runaway scraping
-                    
                     run_input = {
                         "searchTerms": [search_query],
-                        "maxTweets": tweets_per_query,  # Set low to prevent runaway
+                        "maxTweets": max_tweets,
                         "includeSearchTerms": False,
                         "onlyImage": False,
                         "onlyQuote": False,
@@ -567,7 +564,7 @@ def ingest_twitter(max_tweets=100, days_back=None):
                         run_input["until"] = end_date
                         logger.info(f"Fetching historical tweets from {start_date} to {end_date}")
                     
-                    # Add timeout to prevent runaway scraping (2 minutes max)
+                    # Use timeout to prevent runaway scraping - accept whatever we get within time limit
                     run = client.actor("61RPP7dywgiy0JPD0").call(
                         run_input=run_input,
                         timeout_secs=120  # Abort after 2 minutes
@@ -576,11 +573,6 @@ def ingest_twitter(max_tweets=100, days_back=None):
                     # Fetch all data from Apify dataset
                     dataset_items = list(client.dataset(run["defaultDatasetId"]).iterate_items())
                     logger.info(f"Apify dataset returned {len(dataset_items)} items for query: {search_query}")
-                    
-                    # Hard limit: If Apify ignored maxTweets, enforce it ourselves
-                    if len(dataset_items) > tweets_per_query * 2:  # Allow 2x buffer
-                        logger.warning(f"Apify returned {len(dataset_items)} items but we requested {tweets_per_query}. Truncating to {tweets_per_query * 2}.")
-                        dataset_items = dataset_items[:tweets_per_query * 2]
                     
                     # IMMEDIATELY log full data to file BEFORE processing (so we don't lose data on errors)
                     if dataset_items:
