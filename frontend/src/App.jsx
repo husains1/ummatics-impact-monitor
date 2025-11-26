@@ -334,52 +334,23 @@ function TwitterTab({ data, sentimentData, page, setPage }) {
   const twitterMetrics = platform_metrics.filter(m => m.platform === 'Twitter')
   const twitterMentions = recent_mentions.filter(m => m.platform === 'Twitter')
 
-  // Aggregate metrics by month for full history view
-  const monthlyData = {}
-  twitterMetrics.forEach(metricRaw => {
-    const metric = { ...metricRaw, _date: metricRaw.date || metricRaw.week_start_date || metricRaw.week_start }
-    const date = new Date(metric._date)
-    const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
-    
-    // Check if date is before Nov 2025 (follower/engagement data not available)
-    const isBeforeNov2025 = date < new Date('2025-11-01')
-    
-    if (!monthlyData[monthKey]) {
-      monthlyData[monthKey] = {
-        month: monthKey,
-        follower_count: isBeforeNov2025 ? null : metric.follower_count,
-        mentions_count: 0,
-        engagement_rate: 0,
-        count: 0,
-        latest_date: metric._date
-      }
-    }
-    
-    // Use most recent follower count for the month (only for Nov 2025+)
-    if (!isBeforeNov2025 && new Date(metric._date) > new Date(monthlyData[monthKey].latest_date)) {
-      monthlyData[monthKey].follower_count = metric.follower_count
-      monthlyData[monthKey].latest_date = metric._date
-    }
-    
-    monthlyData[monthKey].mentions_count += metric.mentions_count || 0
-    monthlyData[monthKey].engagement_rate += metric.engagement_rate || 0
-    monthlyData[monthKey].count += 1
-  })
-
-  // Calculate average engagement rate per month, set to null for pre-Nov 2025
-  Object.values(monthlyData).forEach(month => {
-    const date = new Date(month.month + '-01')
-    if (date < new Date('2025-11-01')) {
-      month.engagement_rate = null
-    } else {
-      month.engagement_rate = month.engagement_rate / month.count
-    }
-  })
-
-  const monthlyMetrics = Object.values(monthlyData).sort((a, b) => a.month.localeCompare(b.month))
+  // Filter to Oct 2025+ and use daily data (no monthly aggregation)
+  const dailyMetrics = twitterMetrics
+    .map(metricRaw => ({
+      ...metricRaw,
+      _date: metricRaw.date || metricRaw.week_start_date || metricRaw.week_start
+    }))
+    .filter(metric => new Date(metric._date) >= new Date('2025-10-01'))
+    .map(metric => ({
+      date: metric._date,
+      follower_count: metric.follower_count,
+      mentions_count: metric.mentions_count || 0,
+      engagement_rate: metric.engagement_rate || 0
+    }))
+    .sort((a, b) => new Date(a.date) - new Date(b.date))
 
   // Group metrics by platform and get latest follower count.
-  const platformData = { Twitter: monthlyMetrics }
+  const platformData = { Twitter: dailyMetrics }
   const latestFollowers = {}
 
   twitterMetrics.forEach(metricRaw => {
@@ -474,35 +445,24 @@ function TwitterTab({ data, sentimentData, page, setPage }) {
 
         if (!sentimentSeries.length) return null
 
-        // Aggregate by month for full history view
-        const monthlySentiment = {}
-        sentimentSeries.forEach(item => {
-          const date = new Date(item._date)
-          const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
-          if (!monthlySentiment[monthKey]) {
-            monthlySentiment[monthKey] = { month: monthKey, sum: 0, count: 0 }
-          }
-          monthlySentiment[monthKey].sum += item.avg_sentiment
-          monthlySentiment[monthKey].count += 1
-        })
-
-        const monthlySentimentData = Object.values(monthlySentiment).map(m => ({
-          month: m.month,
-          avg_sentiment: m.sum / m.count
-        })).sort((a, b) => a.month.localeCompare(b.month))
+        // Filter to Oct 2025+ and use daily data (no monthly aggregation)
+        const dailySentimentData = sentimentSeries
+          .filter(item => new Date(item._date) >= new Date('2025-10-01'))
+          .map(item => ({
+            date: item._date,
+            avg_sentiment: item.avg_sentiment
+          }))
+          .sort((a, b) => new Date(a.date) - new Date(b.date))
 
         return (
           <div className="bg-white p-6 rounded-lg shadow">
-            <h2 className="text-xl font-semibold mb-4">Average Sentiment (Monthly - Full History)</h2>
+            <h2 className="text-xl font-semibold mb-4">Average Sentiment (Daily - Oct 2025 onwards)</h2>
             <ResponsiveContainer width="100%" height={300}>
-              <LineChart data={monthlySentimentData}>
+              <LineChart data={dailySentimentData}>
                 <CartesianGrid strokeDasharray="3 3" />
                 <XAxis
-                  dataKey="month"
-                  tickFormatter={(month) => {
-                    const [year, m] = month.split('-')
-                    return new Date(year, parseInt(m) - 1).toLocaleDateString('en-US', { year: 'numeric', month: 'short' })
-                  }}
+                  dataKey="date"
+                  tickFormatter={(date) => new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
                 />
                 <YAxis domain={['auto', 'auto']} />
                 <Tooltip />
@@ -517,16 +477,13 @@ function TwitterTab({ data, sentimentData, page, setPage }) {
       {/* Platform Metrics */}
       {Object.entries(platformData).map(([platform, metrics]) => (
         <div key={platform} className="bg-white p-6 rounded-lg shadow">
-          <h2 className="text-xl font-semibold mb-4">{platform} Metrics (Monthly - Full History)</h2>
+          <h2 className="text-xl font-semibold mb-4">{platform} Metrics (Daily - Oct 2025 onwards)</h2>
           <ResponsiveContainer width="100%" height={300}>
             <LineChart data={metrics}>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis
-                dataKey="month"
-                tickFormatter={(month) => {
-                  const [year, m] = month.split('-')
-                  return new Date(year, parseInt(m) - 1).toLocaleDateString('en-US', { year: 'numeric', month: 'short' })
-                }}
+                dataKey="date"
+                tickFormatter={(date) => new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
               />
               <YAxis yAxisId="left" />
               <YAxis yAxisId="right" orientation="right" domain={[0, 'auto']} />

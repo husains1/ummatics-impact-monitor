@@ -443,3 +443,71 @@ fetchData('/sentiment?platform=Reddit', setRedditSentimentData)
 - **Filter at the source**: Backend should filter by platform, not frontend
 - **Test with actual data**: Verify each platform shows only its own sentiment metrics
 - **Database can have placeholder rows**: Empty sentiment rows created by scheduler need filtering
+
+---
+
+## Chart Data Granularity - Monthly vs Daily (Nov 26, 2025)
+
+### Context
+Initially used monthly aggregation to display Twitter metrics from 2009 to present. After filtering chart display to only show data from October 2025 onwards for relevance, the reduced time range made daily datapoints more appropriate than monthly aggregation.
+
+### Decision Process
+1. **Full history (2009-2025)**: Monthly aggregation was necessary
+   - 16+ years of data = ~190 months
+   - Daily would be ~5,800+ datapoints (too cluttered)
+   - Monthly provided cleaner visualization
+
+2. **Recent data only (Oct 2025+)**: Daily datapoints became better
+   - ~2 months of data = ~60 days
+   - Daily provides more granular insights
+   - No need for aggregation with smaller dataset
+
+### Implementation
+Before (monthly aggregation):
+```javascript
+// Aggregate metrics by month
+const monthlyData = {}
+twitterMetrics.forEach(metric => {
+  const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
+  if (!monthlyData[monthKey]) {
+    monthlyData[monthKey] = { month: monthKey, mentions_count: 0, count: 0 }
+  }
+  monthlyData[monthKey].mentions_count += metric.mentions_count || 0
+  monthlyData[monthKey].count += 1
+})
+```
+
+After (daily datapoints with filtering):
+```javascript
+// Use daily data, filtered to Oct 2025+
+const dailyMetrics = twitterMetrics
+  .map(metricRaw => ({
+    ...metricRaw,
+    _date: metricRaw.date || metricRaw.week_start_date || metricRaw.week_start
+  }))
+  .filter(metric => new Date(metric._date) >= new Date('2025-10-01'))
+  .map(metric => ({
+    date: metric._date,
+    follower_count: metric.follower_count,
+    mentions_count: metric.mentions_count || 0,
+    engagement_rate: metric.engagement_rate || 0
+  }))
+  .sort((a, b) => new Date(a.date) - new Date(b.date))
+```
+
+Chart display updated:
+```javascript
+// Before: Monthly labels
+<XAxis dataKey="month" tickFormatter={(month) => ...} />
+
+// After: Daily labels
+<XAxis dataKey="date" tickFormatter={(date) => new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} />
+```
+
+### Key Takeaways
+- **Match granularity to time range**: Use daily for short periods (weeks/months), monthly for long periods (years)
+- **Filter before display, not data**: Keep full historical data in database, filter only for visualization
+- **Table vs Chart**: Table can show all entries; charts should show relevant timeframe
+- **When filtering reduces scope significantly**: Reconsider aggregation level - you may not need it anymore
+- **UX improvement**: Don't clutter charts with irrelevant old data; show what's actionable
+- **Data completeness**: ~2 months is small enough for daily granularity without overwhelming the chart
