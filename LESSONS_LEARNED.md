@@ -560,3 +560,63 @@ Created `google_search_subreddits()` function in `backend/ingestion.py`:
 - Always deploy and test on AWS, not locally
 - Local containers should only be used when user explicitly requests local development
 - This prevents confusion between local and production environments
+
+---
+
+## AWS EC2 Deployment Policy (Dec 7, 2025)
+
+### Policy
+**NEVER use `git pull` on AWS EC2 instances. Always deploy via Docker images pushed to ECR.**
+
+### Rationale
+- Direct git pulls on EC2 bypass the Docker build process
+- Can lead to inconsistent environments (missing dependencies, wrong Python versions, etc.)
+- Doesn't leverage Docker caching or image versioning
+- Makes rollbacks difficult
+- Can cause permission issues with git credentials on EC2
+
+### Correct Deployment Process
+1. Make changes locally
+2. Commit and push to GitHub (for version control)
+3. Build Docker images locally: `docker build -t ummatics-backend:latest ./backend`
+4. Tag images with ECR repository URLs
+5. Push images to AWS ECR
+6. Copy updated `docker-compose.yml` to EC2 via `scp`
+7. SSH to EC2 and restart: `docker-compose down && docker-compose up -d`
+
+### Critical Docker Compose Configuration
+**NEVER mount source code directories as volumes in production:**
+```yaml
+# WRONG - overwrites image code with local files
+volumes:
+  - ./backend:/app
+  
+# CORRECT - only mount credentials, use code from image
+volumes:
+  - ./credentials:/app/credentials
+```
+
+### Key Takeaways
+- EC2 should pull images from ECR, never clone/pull from GitHub
+- Remove `./backend:/app` volume mounts in production docker-compose.yml
+- Volume mounts override the Docker image contents with local files
+- Always use ECR images for deployments to ensure consistency
+- Git operations should only happen on local development machines
+
+### Deployment Commands Reference
+```bash
+# Local: Build and push
+docker build -t ummatics-backend:latest ./backend
+docker tag ummatics-backend:latest 182758038500.dkr.ecr.us-east-1.amazonaws.com/ummatics-impact-monitor:backend-latest
+aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 182758038500.dkr.ecr.us-east-1.amazonaws.com
+docker push 182758038500.dkr.ecr.us-east-1.amazonaws.com/ummatics-impact-monitor:backend-latest
+
+# Copy docker-compose.yml to EC2
+scp -i ~/.ssh/ummatics-monitor-key.pem docker-compose.yml ubuntu@3.226.110.16:/home/ubuntu/ummatics-impact-monitor/
+
+# EC2: Authenticate and deploy
+ssh -i ~/.ssh/ummatics-monitor-key.pem ubuntu@3.226.110.16
+aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 182758038500.dkr.ecr.us-east-1.amazonaws.com
+cd /home/ubuntu/ummatics-impact-monitor
+docker-compose down && docker-compose up -d
+```
