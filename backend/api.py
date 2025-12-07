@@ -105,8 +105,7 @@ def get_overview():
                 week_start_date,
                 total_news_mentions,
                 total_social_mentions,
-                total_citations,
-                total_website_sessions
+                total_citations
             FROM weekly_snapshots
             ORDER BY week_start_date DESC
             LIMIT 12
@@ -119,8 +118,7 @@ def get_overview():
             SELECT 
                 COALESCE(total_news_mentions, 0) as news_mentions,
                 COALESCE(total_social_mentions, 0) as social_mentions,
-                COALESCE(total_citations, 0) as citations,
-                COALESCE(total_website_sessions, 0) as website_sessions
+                COALESCE(total_citations, 0) as citations
             FROM weekly_snapshots
             WHERE week_start_date = %s
         """, (monday,))
@@ -130,8 +128,7 @@ def get_overview():
             current_week = {
                 'news_mentions': 0,
                 'social_mentions': 0,
-                'citations': 0,
-                'website_sessions': 0
+                'citations': 0
             }
         
         cur.close()

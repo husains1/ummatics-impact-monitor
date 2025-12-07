@@ -23,7 +23,6 @@ function App() {
   const [sentimentData, setSentimentData] = useState(null)
   const [redditData, setRedditData] = useState(null)
   const [redditSentimentData, setRedditSentimentData] = useState(null)
-  const [websiteData, setWebsiteData] = useState(null)
   const [citationsData, setCitationsData] = useState(null)
   const [newsData, setNewsData] = useState(null)
 
@@ -103,7 +102,6 @@ function App() {
         fetchData('/sentiment?platform=Reddit', setRedditSentimentData)
         setRedditPage(1)
       }
-      if (activeTab === 'website') fetchData('/website', setWebsiteData)
       if (activeTab === 'citations') fetchData('/citations', setCitationsData)
       if (activeTab === 'news') fetchData('/news', setNewsData)
     }
@@ -216,7 +214,7 @@ function App() {
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-6">
         <div className="border-b border-gray-200">
           <nav className="-mb-px flex space-x-8">
-            {['overview', 'twitter', 'reddit', 'website', 'citations', 'news'].map((tab) => (
+            {['overview', 'twitter', 'reddit', 'citations', 'news'].map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
@@ -250,9 +248,6 @@ function App() {
         {!loading && activeTab === 'reddit' && redditData && (
           <RedditTab data={redditData} sentimentData={redditSentimentData} page={redditPage} setPage={setRedditPage} />
         )}
-        {!loading && activeTab === 'website' && websiteData && (
-          <WebsiteTab data={websiteData} />
-        )}
         {!loading && activeTab === 'citations' && citationsData && (
           <CitationsTab data={citationsData} />
         )}
@@ -270,8 +265,7 @@ function OverviewTab({ data }) {
   const current_week = (data && data.current_week) ? data.current_week : {
     news_mentions: 0,
     social_mentions: 0,
-    citations: 0,
-    website_sessions: 0
+    citations: 0
   }
 
   const weekly_trends = (data && data.weekly_trends) ? data.weekly_trends : []
@@ -279,7 +273,7 @@ function OverviewTab({ data }) {
   return (
     <div className="space-y-6">
       {/* Current Week Metrics */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <MetricCard
           title="News Mentions"
           value={current_week.news_mentions}
@@ -294,11 +288,6 @@ function OverviewTab({ data }) {
           title="Citations"
           value={current_week.citations}
           color="green"
-        />
-        <MetricCard
-          title="Website Sessions"
-          value={current_week.website_sessions}
-          color="orange"
         />
       </div>
 
@@ -318,7 +307,6 @@ function OverviewTab({ data }) {
             <Line type="monotone" dataKey="total_news_mentions" stroke="#3b82f6" name="News" />
             <Line type="monotone" dataKey="total_social_mentions" stroke="#8b5cf6" name="Social" />
             <Line type="monotone" dataKey="total_citations" stroke="#10b981" name="Citations" />
-            <Line type="monotone" dataKey="total_website_sessions" stroke="#f59e0b" name="Sessions" />
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -930,65 +918,6 @@ function RedditTab({ data, sentimentData, page, setPage }) {
             )}
           </>
         )}
-      </div>
-    </div>
-  )
-}
-
-// Website Tab Component
-function WebsiteTab({ data }) {
-  const { weekly_metrics, top_pages, geographic_data } = data
-
-  return (
-    <div className="space-y-6">
-      {/* Weekly Traffic Chart */}
-      <div className="bg-white p-6 rounded-lg shadow">
-        <h2 className="text-xl font-semibold mb-4">Website Traffic Trends</h2>
-        <ResponsiveContainer width="100%" height={400}>
-          <LineChart data={weekly_metrics.reverse()}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis
-              dataKey="week_start_date"
-              tickFormatter={(date) => new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-            />
-            <YAxis />
-            <Tooltip />
-            <Legend />
-            <Line type="monotone" dataKey="total_sessions" stroke="#3b82f6" name="Sessions" />
-            <Line type="monotone" dataKey="total_users" stroke="#10b981" name="Users" />
-            <Line type="monotone" dataKey="total_pageviews" stroke="#f59e0b" name="Pageviews" />
-          </LineChart>
-        </ResponsiveContainer>
-      </div>
-
-      {/* Top Pages */}
-      <div className="bg-white p-6 rounded-lg shadow">
-        <h2 className="text-xl font-semibold mb-4">Top Pages (Last Week)</h2>
-        <ResponsiveContainer width="100%" height={300}>
-          <BarChart data={top_pages.slice(0, 10)} layout="vertical">
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis type="number" />
-            <YAxis dataKey="page_path" type="category" width={150} />
-            <Tooltip />
-            <Bar dataKey="pageviews" fill="#3b82f6" />
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
-
-      {/* Geographic Distribution */}
-      <div className="bg-white p-6 rounded-lg shadow">
-        <h2 className="text-xl font-semibold mb-4">Geographic Distribution</h2>
-        <ResponsiveContainer width="100%" height={300}>
-          <BarChart data={geographic_data.slice(0, 10)}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="country" />
-            <YAxis />
-            <Tooltip />
-            <Legend />
-            <Bar dataKey="sessions" fill="#3b82f6" name="Sessions" />
-            <Bar dataKey="users" fill="#10b981" name="Users" />
-          </BarChart>
-        </ResponsiveContainer>
       </div>
     </div>
   )
