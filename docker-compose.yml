@@ -38,7 +38,6 @@ services:
       CONTACT_EMAIL: ${CONTACT_EMAIL:-contact@ummatics.org}
       GOOGLE_APPLICATION_CREDENTIALS: /app/credentials/google-credentials.json
     volumes:
-      - ./backend:/app
       - ./credentials:/app/credentials
     ports:
       - "5000:5000"
@@ -68,7 +67,6 @@ services:
       CONTACT_EMAIL: ${CONTACT_EMAIL:-contact@ummatics.org}
       GOOGLE_APPLICATION_CREDENTIALS: /app/credentials/google-credentials.json
     volumes:
-      - ./backend:/app
       - ./credentials:/app/credentials
     depends_on:
       db:
