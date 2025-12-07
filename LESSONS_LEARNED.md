@@ -51,6 +51,12 @@ Also fixed column references:
 - Use `grep_search` on `schema.sql` to confirm exact column names AND which table they belong to
 - Aggregated tables (`social_sentiment_metrics`) vs raw data tables (`social_mentions`) have different structures
 - Test queries after ANY schema-related fix to catch cascading column name errors
+- **CRITICAL: Pull from the frontend and check using Chrome DevTools after EACH and EVERY deployment**
+  - Open http://3.226.110.16:3000 in Chrome
+  - Open DevTools (F12) → Network tab
+  - Hard refresh (Ctrl+Shift+R) to bypass cache
+  - Check for 500 errors or failed API calls
+  - Verify all data loads correctly before considering deployment complete
 
 ---
 
