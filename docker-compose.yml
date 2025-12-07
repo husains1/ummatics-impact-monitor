@@ -20,9 +20,7 @@ services:
       retries: 5
 
   api:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
+    image: 182758038500.dkr.ecr.us-east-1.amazonaws.com/ummatics-impact-monitor:backend-latest
     container_name: ummatics_api
     env_file:
       - .env
@@ -52,9 +50,7 @@ services:
     restart: unless-stopped
 
   scheduler:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
+    image: 182758038500.dkr.ecr.us-east-1.amazonaws.com/ummatics-impact-monitor:backend-latest
     container_name: ummatics_scheduler
     command: python scheduler.py
     env_file:
