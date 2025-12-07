@@ -598,6 +598,9 @@ Enhanced the overview page with 5 new data-rich sections:
 - Always include fallback UI for empty states (`No data available` messages)
 - Limit trending keywords by character length to filter noise
 - Grid layouts work well for responsive design across device sizes
+- **CRITICAL: Always verify column names match the actual database schema before deploying**
+- Use Chrome DevTools Network tab to diagnose 500 errors, then check backend logs immediately
+- Common SQL errors: wrong column names (`date` vs `posted_at`, `text` vs `content`, `url` vs `post_url`)
 
 ---
 
