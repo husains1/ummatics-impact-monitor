@@ -269,6 +269,11 @@ function OverviewTab({ data }) {
   }
 
   const weekly_trends = (data && data.weekly_trends) ? data.weekly_trends : []
+  const recent_mentions = (data && data.recent_mentions) ? data.recent_mentions : []
+  const platform_breakdown = (data && data.platform_breakdown) ? data.platform_breakdown : []
+  const sentiment_summary = (data && data.sentiment_summary) ? data.sentiment_summary : []
+  const top_subreddits = (data && data.top_subreddits) ? data.top_subreddits : []
+  const trending_keywords = (data && data.trending_keywords) ? data.trending_keywords : []
 
   return (
     <div className="space-y-6">
@@ -289,6 +294,159 @@ function OverviewTab({ data }) {
           value={current_week.citations}
           color="green"
         />
+      </div>
+
+      {/* Platform Breakdown and Sentiment Summary Row */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Platform Breakdown Pie Chart */}
+        <div className="bg-white p-6 rounded-lg shadow">
+          <h2 className="text-xl font-semibold mb-4">Platform Breakdown (This Week)</h2>
+          {platform_breakdown.length > 0 ? (
+            <ResponsiveContainer width="100%" height={300}>
+              <PieChart>
+                <Pie
+                  data={platform_breakdown}
+                  dataKey="mention_count"
+                  nameKey="platform"
+                  cx="50%"
+                  cy="50%"
+                  outerRadius={80}
+                  label={({ platform, mention_count }) => `${platform}: ${mention_count}`}
+                >
+                  {platform_breakdown.map((entry, index) => (
+                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                  ))}
+                </Pie>
+                <Tooltip />
+              </PieChart>
+            </ResponsiveContainer>
+          ) : (
+            <p className="text-gray-500 text-center py-8">No platform data for this week</p>
+          )}
+        </div>
+
+        {/* Sentiment Summary */}
+        <div className="bg-white p-6 rounded-lg shadow">
+          <h2 className="text-xl font-semibold mb-4">Sentiment Summary (This Week)</h2>
+          {sentiment_summary.length > 0 ? (
+            <div className="space-y-4">
+              {sentiment_summary.map((item, idx) => (
+                <div key={idx} className="border-b pb-3 last:border-b-0">
+                  <div className="font-medium text-gray-900 mb-2">{item.platform}</div>
+                  <div className="flex gap-4 text-sm">
+                    <div className="flex-1">
+                      <div className="flex justify-between mb-1">
+                        <span className="text-green-600">Positive</span>
+                        <span className="font-semibold">{Math.round(item.positive_pct)}%</span>
+                      </div>
+                      <div className="w-full bg-gray-200 rounded-full h-2">
+                        <div className="bg-green-500 h-2 rounded-full" style={{ width: `${item.positive_pct}%` }}></div>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex gap-4 text-sm mt-2">
+                    <div className="flex-1">
+                      <div className="flex justify-between mb-1">
+                        <span className="text-gray-600">Neutral</span>
+                        <span className="font-semibold">{Math.round(item.neutral_pct)}%</span>
+                      </div>
+                      <div className="w-full bg-gray-200 rounded-full h-2">
+                        <div className="bg-gray-400 h-2 rounded-full" style={{ width: `${item.neutral_pct}%` }}></div>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex gap-4 text-sm mt-2">
+                    <div className="flex-1">
+                      <div className="flex justify-between mb-1">
+                        <span className="text-red-600">Negative</span>
+                        <span className="font-semibold">{Math.round(item.negative_pct)}%</span>
+                      </div>
+                      <div className="w-full bg-gray-200 rounded-full h-2">
+                        <div className="bg-red-500 h-2 rounded-full" style={{ width: `${item.negative_pct}%` }}></div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-gray-500 text-center py-8">No sentiment data for this week</p>
+          )}
+        </div>
+      </div>
+
+      {/* Recent Mentions and Trending Keywords Row */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Recent Mentions */}
+        <div className="bg-white p-6 rounded-lg shadow">
+          <h2 className="text-xl font-semibold mb-4">Recent Mentions</h2>
+          {recent_mentions.length > 0 ? (
+            <div className="space-y-3 max-h-96 overflow-y-auto">
+              {recent_mentions.map((mention, idx) => (
+                <div key={idx} className="border-b pb-3 last:border-b-0">
+                  <div className="flex justify-between items-start mb-1">
+                    <span className="font-medium text-sm text-blue-600">{mention.platform}</span>
+                    <span className="text-xs text-gray-500">
+                      {new Date(mention.date).toLocaleDateString()}
+                    </span>
+                  </div>
+                  <p className="text-sm text-gray-700 mb-1">
+                    {mention.text && mention.text.length > 150 
+                      ? mention.text.substring(0, 150) + '...' 
+                      : mention.text}
+                  </p>
+                  <div className="flex justify-between items-center text-xs text-gray-500">
+                    <span>@{mention.author}</span>
+                    {mention.engagement_score && (
+                      <span className="text-purple-600">Engagement: {mention.engagement_score}</span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-gray-500 text-center py-8">No recent mentions</p>
+          )}
+        </div>
+
+        {/* Trending Keywords */}
+        <div className="bg-white p-6 rounded-lg shadow">
+          <h2 className="text-xl font-semibold mb-4">Trending Keywords (This Week)</h2>
+          {trending_keywords.length > 0 ? (
+            <div className="flex flex-wrap gap-2">
+              {trending_keywords.map((keyword, idx) => (
+                <span
+                  key={idx}
+                  className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-blue-100 text-blue-800"
+                >
+                  {keyword.word}
+                  <span className="ml-2 text-xs text-blue-600">({keyword.frequency})</span>
+                </span>
+              ))}
+            </div>
+          ) : (
+            <p className="text-gray-500 text-center py-8">No trending keywords</p>
+          )}
+        </div>
+      </div>
+
+      {/* Top Subreddits */}
+      <div className="bg-white p-6 rounded-lg shadow">
+        <h2 className="text-xl font-semibold mb-4">Recently Discovered Subreddits</h2>
+        {top_subreddits.length > 0 ? (
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+            {top_subreddits.map((subreddit, idx) => (
+              <div key={idx} className="border rounded-lg p-3 hover:bg-gray-50">
+                <div className="font-medium text-blue-600">r/{subreddit.subreddit_name}</div>
+                <div className="text-xs text-gray-500 mt-1">
+                  {new Date(subreddit.discovered_at).toLocaleDateString()}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-gray-500 text-center py-4">No subreddits discovered yet</p>
+        )}
       </div>
 
       {/* Weekly Trends Chart with Logarithmic Scale */}

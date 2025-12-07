@@ -94,7 +94,7 @@ def authenticate():
 @app.route('/api/overview', methods=['GET'])
 @require_auth
 def get_overview():
-    """Get overview data for the dashboard"""
+    """Get overview data for the dashboard with enhanced content"""
     try:
         conn = get_db_connection()
         cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -131,12 +131,86 @@ def get_overview():
                 'citations': 0
             }
         
+        # Get recent mentions (last 10 from all platforms)
+        cur.execute("""
+            SELECT 
+                TO_CHAR(date, 'YYYY-MM-DD')::TEXT as date,
+                platform,
+                text,
+                author,
+                url,
+                engagement_score
+            FROM social_mentions
+            ORDER BY date DESC, engagement_score DESC
+            LIMIT 10
+        """)
+        recent_mentions = cur.fetchall()
+        
+        # Get platform breakdown for current week
+        cur.execute("""
+            SELECT 
+                platform,
+                COUNT(*) as mention_count
+            FROM social_mentions
+            WHERE week_start_date = %s
+            GROUP BY platform
+            ORDER BY mention_count DESC
+        """, (monday,))
+        platform_breakdown = cur.fetchall()
+        
+        # Get sentiment summary for current week
+        cur.execute("""
+            SELECT 
+                platform,
+                COALESCE(AVG(sentiment_score), 0) as avg_sentiment,
+                COALESCE(AVG(CASE WHEN sentiment_label = 'positive' THEN 1 ELSE 0 END) * 100, 0) as positive_pct,
+                COALESCE(AVG(CASE WHEN sentiment_label = 'neutral' THEN 1 ELSE 0 END) * 100, 0) as neutral_pct,
+                COALESCE(AVG(CASE WHEN sentiment_label = 'negative' THEN 1 ELSE 0 END) * 100, 0) as negative_pct
+            FROM social_sentiment_metrics
+            WHERE date >= %s AND date <= %s
+            GROUP BY platform
+        """, (monday, sunday))
+        sentiment_summary = cur.fetchall()
+        
+        # Get top discovered subreddits
+        cur.execute("""
+            SELECT 
+                subreddit_name,
+                TO_CHAR(discovered_at, 'YYYY-MM-DD')::TEXT as discovered_at,
+                is_active
+            FROM discovered_subreddits
+            WHERE is_active = true
+            ORDER BY discovered_at DESC
+            LIMIT 10
+        """)
+        top_subreddits = cur.fetchall()
+        
+        # Get trending keywords (extract from recent mentions)
+        # Simple approach: get most common words from recent tweets/posts
+        cur.execute("""
+            SELECT 
+                unnest(string_to_array(lower(text), ' ')) as word,
+                COUNT(*) as frequency
+            FROM social_mentions
+            WHERE date >= %s
+            GROUP BY word
+            HAVING LENGTH(unnest(string_to_array(lower(text), ' '))) > 4
+            ORDER BY frequency DESC
+            LIMIT 15
+        """, (monday,))
+        trending_keywords = cur.fetchall()
+        
         cur.close()
         conn.close()
         
         return jsonify({
             'current_week': current_week,
-            'weekly_trends': [dict(row) for row in weekly_data]
+            'weekly_trends': [dict(row) for row in weekly_data],
+            'recent_mentions': [dict(row) for row in recent_mentions],
+            'platform_breakdown': [dict(row) for row in platform_breakdown],
+            'sentiment_summary': [dict(row) for row in sentiment_summary],
+            'top_subreddits': [dict(row) for row in top_subreddits],
+            'trending_keywords': [dict(row) for row in trending_keywords]
         })
         
     except Exception as e:
