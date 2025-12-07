@@ -511,3 +511,52 @@ Chart display updated:
 - **When filtering reduces scope significantly**: Reconsider aggregation level - you may not need it anymore
 - **UX improvement**: Don't clutter charts with irrelevant old data; show what's actionable
 - **Data completeness**: ~2 months is small enough for daily granularity without overwhelming the chart
+
+---
+
+## Discovering New Subreddits via Google Search (Dec 7, 2025)
+
+### Problem
+Finding relevant subreddits or Reddit posts for monitoring Ummatics-related content can be challenging, especially when relying solely on Reddit's search RSS.
+
+### Solution
+Use Google search to complement Reddit's search capabilities. Google often indexes Reddit posts and subreddits more comprehensively than Reddit's own search engine.
+
+#### Implementation
+Created `google_search_subreddits()` function in `backend/ingestion.py`:
+- Uses `requests` and `BeautifulSoup` to parse Google search results
+- Searches for `site:reddit.com "ummatics" OR "ummatic"`
+- Extracts subreddit names from Reddit URLs using regex
+- Stores discovered subreddits in `discovered_subreddits` table
+- Prevents duplicates by checking against existing database entries and monitored subreddits
+- Scheduled to run weekly (Sundays at 10:00 AM) via `scheduler.py`
+
+#### Example Google Search Queries
+- `site:reddit.com "ummatics"`
+- `site:reddit.com/r/ "ummatic"`
+- `site:reddit.com "ummatics" OR "ummatic"`
+- `site:reddit.com "ummatics" after:2025-01-01`
+
+### Key Takeaways
+- Google search can be a powerful tool for discovering new subreddits and posts
+- Use advanced search operators like `site:` and `after:` to refine results
+- Weekly automated discovery helps maintain comprehensive monitoring coverage
+- BeautifulSoup dependency added to `requirements.txt` for HTML parsing
+
+---
+
+## Local Container Usage Policy (Dec 7, 2025)
+
+### Policy
+**DO NOT start local Docker containers unless explicitly requested by the user.**
+
+### Rationale
+- All production deployments run on AWS EC2
+- Local containers are only for development/testing when specifically needed
+- Prevents accidental local resource consumption
+- Ensures consistency by testing/deploying only to AWS environment
+
+### Key Takeaways
+- Always deploy and test on AWS, not locally
+- Local containers should only be used when user explicitly requests local development
+- This prevents confusion between local and production environments

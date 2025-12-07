@@ -304,7 +304,6 @@ DASHBOARD_PASSWORD=your_dashboard_password_here
 # API Keys
 GOOGLE_ALERTS_RSS_URL=your_google_alerts_rss_url
 TWITTER_BEARER_TOKEN=your_twitter_bearer_token
-GA4_PROPERTY_ID=your_ga4_property_id
 CONTACT_EMAIL=contact@ummatics.org
 ```
 

@@ -12,6 +12,7 @@ import json
 from textblob import TextBlob
 from apify_client import ApifyClient
 import html
+from bs4 import BeautifulSoup
 from google.analytics.data_v1beta import BetaAnalyticsDataClient
 from google.analytics.data_v1beta.types import (
     DateRange,
@@ -228,6 +229,106 @@ def ingest_google_alerts():
         
     except Exception as e:
         logger.error(f"Error in Google Alerts ingestion: {e}")
+
+
+def google_search_subreddits():
+    """
+    Use Google search to discover new subreddits mentioning 'ummatics' or 'ummatic'.
+    This complements the existing Reddit RSS search with Google's more comprehensive indexing.
+    Saves discovered subreddits to the database.
+    
+    Returns:
+        list: List of newly discovered subreddit names
+    """
+    logger.info("Starting Google search for Reddit subreddits...")
+    
+    discovered_subreddits = set()
+    
+    try:
+        # Construct Google search query to search Reddit
+        query = 'site:reddit.com "ummatics" OR "ummatic"'
+        search_url = f"https://www.google.com/search?q={urllib.parse.quote(query)}&num=50"
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        
+        logger.info(f"Fetching Google search results: {search_url}")
+        
+        response = requests.get(search_url, headers=headers, timeout=30)
+        
+        if response.status_code != 200:
+            logger.error(f"Google search failed with status code {response.status_code}")
+            return []
+        
+        # Parse HTML response
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Extract links from search results
+        for a_tag in soup.find_all('a', href=True):
+            href = a_tag['href']
+            
+            # Google wraps URLs in /url?q=...&sa=... format
+            if '/url?q=' in href:
+                match_url = re.search(r'/url\?q=(.*?)&', href)
+                if match_url:
+                    url = urllib.parse.unquote(match_url.group(1))
+                    
+                    # Extract subreddit name from Reddit URL
+                    match_sub = re.search(r'reddit\.com/r/([a-zA-Z0-9_]+)/', url)
+                    if match_sub:
+                        subreddit = match_sub.group(1).lower()
+                        if subreddit not in ['all', 'popular', 'announcements', 'reddit']:
+                            discovered_subreddits.add(subreddit)
+                            logger.info(f"Discovered subreddit from Google search: r/{subreddit}")
+        
+        # Get current subreddits from environment
+        current_urls = os.getenv('REDDIT_RSS_URLS', '').split(',')
+        current_subreddits = set()
+        for url in current_urls:
+            match = re.search(r'/r/([a-zA-Z0-9_]+)/', url)
+            if match:
+                current_subreddits.add(match.group(1).lower())
+        
+        # Check database for previously discovered subreddits
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT subreddit_name FROM discovered_subreddits")
+        db_subreddits = set(row[0].lower() for row in cur.fetchall())
+        
+        # Find truly new subreddits (not in env or database)
+        new_subreddits = discovered_subreddits - current_subreddits - db_subreddits
+        
+        if discovered_subreddits:
+            logger.info(f"Total subreddits found via Google: {len(discovered_subreddits)}")
+            logger.info(f"New subreddits (not already monitored): {len(new_subreddits)}")
+            
+            # Save all discovered subreddits to database
+            for subreddit in discovered_subreddits:
+                try:
+                    cur.execute("""
+                        INSERT INTO discovered_subreddits (subreddit_name, is_active)
+                        VALUES (%s, %s)
+                        ON CONFLICT (subreddit_name) DO UPDATE SET
+                            last_checked = CURRENT_TIMESTAMP
+                    """, (subreddit, True))
+                except Exception as e:
+                    logger.error(f"Error saving subreddit {subreddit}: {e}")
+            
+            conn.commit()
+            logger.info(f"Saved {len(discovered_subreddits)} subreddits to database")
+        else:
+            logger.info("No subreddits discovered via Google search")
+        
+        cur.close()
+        conn.close()
+        
+        logger.info(f"Google subreddit discovery complete. New: {len(new_subreddits)}")
+        return list(new_subreddits)
+        
+    except Exception as e:
+        logger.error(f"Error in Google subreddit discovery: {e}")
+        return []
 
 
 def discover_new_subreddits():
@@ -497,30 +598,23 @@ def ingest_reddit():
         logger.error(f"Error in Reddit ingestion: {e}")
 
 
-
 def ingest_twitter(max_tweets=100, days_back=None):
-    """Fetch Twitter mentions using Apify (with fallback to Twitter API)
+    """Fetch Twitter mentions using Twitter API (with fallback to Apify on error)
     
     Args:
         max_tweets: Maximum number of tweets to fetch (default: 100)
         days_back: If specified, fetch tweets from this many days ago (for historical backfill)
     """
     logger.info(f"Starting Twitter ingestion (max_tweets={max_tweets}, days_back={days_back})...")
-    
-    use_twitter_api = False
-    
-    # Determine which API to use
-    if not APIFY_API_TOKEN:
-        logger.warning("Apify API token not configured, using Twitter API")
-        use_twitter_api = True
-    elif not TWITTER_BEARER_TOKEN:
-        logger.warning("Twitter Bearer Token not configured")
+
+    if not TWITTER_BEARER_TOKEN:
+        logger.warning("Twitter Bearer Token not configured, skipping Twitter ingestion")
         return
-    
+
     try:
         monday, sunday = get_current_week_dates()
         today = datetime.now().date()
-        
+
         # Get existing tweet IDs from database to avoid duplicates
         conn = get_db_connection()
         cur = conn.cursor()
@@ -532,11 +626,58 @@ def ingest_twitter(max_tweets=100, days_back=None):
         logger.info(f"Found {len(existing_tweet_ids)} existing tweets in database")
         cur.close()
         conn.close()
-        
+
         all_tweets = []
+
+        # Try Twitter API first
+        try:
+            logger.info("Attempting to use Twitter API...")
+            search_url = "https://api.twitter.com/2/tweets/search/recent"
+            headers = {"Authorization": f"Bearer {TWITTER_BEARER_TOKEN}"}
+            
+            params = {
+                "query": "(Ummatics OR ummatics OR Ummatic OR ummatic OR @ummatics) -from:ummatics",
+                "max_results": min(max_tweets, 100),
+                "tweet.fields": "created_at,public_metrics,author_id",
+                "expansions": "author_id",
+                "user.fields": "username"
+            }
+            
+            response = requests.get(search_url, headers=headers, params=params)
+            
+            if response.status_code == 429:
+                logger.warning("Twitter API rate limit exceeded")
+            elif response.status_code == 200:
+                data = response.json()
+                users = {user['id']: user for user in data.get('includes', {}).get('users', [])}
+                
+                for tweet in data.get('data', []):
+                    # Convert Twitter API format to Apify-like format for consistent processing
+                    author_id = tweet.get('author_id', '')
+                    author_username = users.get(author_id, {}).get('username', 'Unknown')
+                    
+                    all_tweets.append({
+                        'id': tweet['id'],
+                        'text': tweet.get('text', ''),
+                        'author': {'userName': author_username},
+                        'createdAt': tweet.get('created_at', ''),
+                        'url': f"https://twitter.com/{author_username}/status/{tweet['id']}",
+                        'likeCount': tweet.get('public_metrics', {}).get('like_count', 0),
+                        'retweetCount': tweet.get('public_metrics', {}).get('retweet_count', 0),
+                        'replyCount': tweet.get('public_metrics', {}).get('reply_count', 0)
+                    })
+                
+                logger.info(f"Twitter API returned {len(all_tweets)} tweets")
+            else:
+                logger.error(f"Twitter API error: {response.status_code} - {response.text}")
         
-        # Try Apify first, fall back to Twitter API if it fails
-        if not use_twitter_api and APIFY_API_TOKEN:
+        except Exception as e:
+            logger.warning(f"Twitter API error: {e}, falling back to Apify")
+
+            if not APIFY_API_TOKEN:
+                logger.warning("Apify API token not configured, skipping Apify fallback")
+                return
+
             try:
                 logger.info("Attempting to use Apify Twitter Scraper...")
                 client = ApifyClient(APIFY_API_TOKEN)
@@ -611,60 +752,10 @@ def ingest_twitter(max_tweets=100, days_back=None):
                 logger.info(f"Apify returned {len(all_tweets)} total tweets")
                 
             except Exception as apify_error:
-                logger.error(f"Apify failed: {apify_error}")
-                logger.info("Apify error details - this could be a timeout or API error")
-                logger.info("Falling back to Twitter API...")
-                use_twitter_api = True
-                all_tweets = []
-        
-        # Use Twitter API (either as fallback or primary)
-        if use_twitter_api:
-            if days_back:
-                logger.warning("Twitter API does not support historical backfill - only recent tweets (7 days)")
-            
-            logger.info("Using Twitter API for tweet search...")
-            search_url = "https://api.twitter.com/2/tweets/search/recent"
-            headers = {"Authorization": f"Bearer {TWITTER_BEARER_TOKEN}"}
-            
-            params = {
-                "query": "(Ummatics OR ummatics OR Ummatic OR ummatic OR @ummatics) -from:ummatics",
-                "max_results": min(max_tweets, 100),
-                "tweet.fields": "created_at,public_metrics,author_id",
-                "expansions": "author_id",
-                "user.fields": "username"
-            }
-            
-            response = requests.get(search_url, headers=headers, params=params)
-            
-            if response.status_code == 429:
-                logger.warning("Twitter API rate limit exceeded")
-            elif response.status_code == 200:
-                data = response.json()
-                users = {user['id']: user for user in data.get('includes', {}).get('users', [])}
-                
-                for tweet in data.get('data', []):
-                    # Convert Twitter API format to Apify-like format for consistent processing
-                    author_id = tweet.get('author_id', '')
-                    author_username = users.get(author_id, {}).get('username', 'Unknown')
-                    
-                    all_tweets.append({
-                        'id': tweet['id'],
-                        'text': tweet.get('text', ''),
-                        'author': {'userName': author_username},
-                        'createdAt': tweet.get('created_at', ''),
-                        'url': f"https://twitter.com/{author_username}/status/{tweet['id']}",
-                        'likeCount': tweet.get('public_metrics', {}).get('like_count', 0),
-                        'retweetCount': tweet.get('public_metrics', {}).get('retweet_count', 0),
-                        'replyCount': tweet.get('public_metrics', {}).get('reply_count', 0)
-                    })
-                
-                logger.info(f"Twitter API returned {len(all_tweets)} tweets")
-            else:
-                logger.error(f"Twitter API error: {response.status_code} - {response.text}")
+                logger.error(f"Apify error: {apify_error}, unable to fetch Twitter mentions")
         
         # ALWAYS fetch follower count from Twitter API (not Apify)
         
-        # ALWAYS fetch follower count from Twitter API (not Apify)
         follower_count = 0
         if TWITTER_BEARER_TOKEN:
             try:
@@ -844,139 +935,6 @@ def ingest_twitter(max_tweets=100, days_back=None):
         logger.error(f"Error in Twitter ingestion: {e}")
         import traceback
         logger.error(traceback.format_exc())
-
-
-def ingest_google_analytics():
-    """Fetch Google Analytics 4 data"""
-    logger.info("Starting Google Analytics ingestion...")
-    
-    if not GA4_PROPERTY_ID:
-        logger.warning("GA4 Property ID not configured")
-        return
-    
-    try:
-        # Initialize GA4 client
-        credentials_path = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
-        if credentials_path and os.path.exists(credentials_path):
-            credentials = service_account.Credentials.from_service_account_file(credentials_path)
-            client = BetaAnalyticsDataClient(credentials=credentials)
-        else:
-            logger.warning("Google service account credentials not found")
-            return
-        
-        monday, sunday = get_current_week_dates()
-        
-        # Request basic metrics
-        request = RunReportRequest(
-            property=f"properties/{GA4_PROPERTY_ID}",
-            date_ranges=[DateRange(start_date=monday.isoformat(), end_date=sunday.isoformat())],
-            metrics=[
-                Metric(name="sessions"),
-                Metric(name="totalUsers"),
-                Metric(name="screenPageViews"),
-                Metric(name="averageSessionDuration"),
-                Metric(name="bounceRate"),
-            ],
-        )
-        
-        response = client.run_report(request)
-        
-        if response.rows:
-            row = response.rows[0]
-            sessions = int(row.metric_values[0].value)
-            users = int(row.metric_values[1].value)
-            pageviews = int(row.metric_values[2].value)
-            avg_duration = float(row.metric_values[3].value)
-            bounce_rate = float(row.metric_values[4].value)
-            
-            conn = get_db_connection()
-            cur = conn.cursor()
-            
-            # Insert website metrics
-            cur.execute("""
-                INSERT INTO website_metrics 
-                (week_start_date, total_sessions, total_users, total_pageviews, avg_session_duration, bounce_rate)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                ON CONFLICT (week_start_date) 
-                DO UPDATE SET 
-                    total_sessions = EXCLUDED.total_sessions,
-                    total_users = EXCLUDED.total_users,
-                    total_pageviews = EXCLUDED.total_pageviews,
-                    avg_session_duration = EXCLUDED.avg_session_duration,
-                    bounce_rate = EXCLUDED.bounce_rate
-            """, (monday, sessions, users, pageviews, avg_duration, bounce_rate))
-            
-            conn.commit()
-            cur.close()
-            conn.close()
-            
-            logger.info(f"Google Analytics ingestion complete. Sessions: {sessions}, Users: {users}")
-        
-        # Fetch top pages
-        request_pages = RunReportRequest(
-            property=f"properties/{GA4_PROPERTY_ID}",
-            date_ranges=[DateRange(start_date=monday.isoformat(), end_date=sunday.isoformat())],
-            dimensions=[Dimension(name="pagePath")],
-            metrics=[
-                Metric(name="screenPageViews"),
-                Metric(name="averageSessionDuration"),
-            ],
-            limit=10,
-        )
-        
-        response_pages = client.run_report(request_pages)
-        
-        conn = get_db_connection()
-        cur = conn.cursor()
-        
-        for row in response_pages.rows:
-            page_path = row.dimension_values[0].value
-            pageviews = int(row.metric_values[0].value)
-            avg_time = float(row.metric_values[1].value)
-            
-            cur.execute("""
-                INSERT INTO top_pages (week_start_date, page_path, pageviews, avg_time_on_page)
-                VALUES (%s, %s, %s, %s)
-                ON CONFLICT (week_start_date, page_path) 
-                DO UPDATE SET 
-                    pageviews = EXCLUDED.pageviews,
-                    avg_time_on_page = EXCLUDED.avg_time_on_page
-            """, (monday, page_path, pageviews, avg_time))
-        
-        # Fetch geographic data
-        request_geo = RunReportRequest(
-            property=f"properties/{GA4_PROPERTY_ID}",
-            date_ranges=[DateRange(start_date=monday.isoformat(), end_date=sunday.isoformat())],
-            dimensions=[Dimension(name="country")],
-            metrics=[
-                Metric(name="sessions"),
-                Metric(name="totalUsers"),
-            ],
-            limit=20,
-        )
-        
-        response_geo = client.run_report(request_geo)
-        
-        for row in response_geo.rows:
-            country = row.dimension_values[0].value
-            sessions = int(row.metric_values[0].value)
-            users = int(row.metric_values[1].value)
-            
-            cur.execute("""
-                INSERT INTO geographic_metrics (week_start_date, country, sessions, users)
-                VALUES (%s, %s, %s, %s)
-                ON CONFLICT (week_start_date, country) 
-                DO UPDATE SET 
-                    sessions = EXCLUDED.sessions,
-                    users = EXCLUDED.users
-            """, (monday, country, sessions, users))
-        
-        conn.commit()
-        cur.close()
-        conn.close()
-        
-    except Exception as e:
-        logger.error(f"Error in Google Analytics ingestion: {e}")
 
 
 def ingest_openalex():
@@ -1225,7 +1183,6 @@ def run_full_ingestion():
         ingest_google_alerts()
         ingest_reddit()
         ingest_twitter()
-        ingest_google_analytics()
         ingest_openalex()
         update_weekly_snapshot()
 

@@ -85,8 +85,8 @@ GOOGLE_ALERTS_RSS_URL=https://google.com/alerts/feeds/YOUR_FEED_ID_HERE
 TWITTER_BEARER_TOKEN=your_twitter_bearer_token_here
 
 # Google Analytics 4
-GA4_PROPERTY_ID=your_property_id
-GOOGLE_APPLICATION_CREDENTIALS=./credentials/ga4-credentials.json
+# GA4_PROPERTY_ID=your_property_id
+# GOOGLE_APPLICATION_CREDENTIALS=./credentials/ga4-credentials.json
 
 # OpenAlex (Academic Citations)
 CONTACT_EMAIL=your-email@example.com

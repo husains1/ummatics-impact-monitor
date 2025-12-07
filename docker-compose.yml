@@ -37,7 +37,6 @@ services:
       REDDIT_RSS_URLS: ${REDDIT_RSS_URLS}
       APIFY_API_TOKEN: ${APIFY_API_TOKEN}
       TWITTER_BEARER_TOKEN: ${TWITTER_BEARER_TOKEN}
-      GA4_PROPERTY_ID: ${GA4_PROPERTY_ID}
       CONTACT_EMAIL: ${CONTACT_EMAIL:-contact@ummatics.org}
       GOOGLE_APPLICATION_CREDENTIALS: /app/credentials/google-credentials.json
     volumes:
@@ -70,7 +69,6 @@ services:
       REDDIT_RSS_URLS: ${REDDIT_RSS_URLS}
       APIFY_API_TOKEN: ${APIFY_API_TOKEN}
       TWITTER_BEARER_TOKEN: ${TWITTER_BEARER_TOKEN}
-      GA4_PROPERTY_ID: ${GA4_PROPERTY_ID}
       CONTACT_EMAIL: ${CONTACT_EMAIL:-contact@ummatics.org}
       GOOGLE_APPLICATION_CREDENTIALS: /app/credentials/google-credentials.json
     volumes:

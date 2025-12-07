@@ -9,6 +9,7 @@ import sys
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from ingestion import run_full_ingestion
 from ingestion import update_sentiment_metrics
+from ingestion import google_search_subreddits
 from datetime import date, timedelta
 
 # Configure logging
@@ -83,6 +84,29 @@ def main():
         name='Daily Sentiment Update',
         replace_existing=True
     )
+    
+    # Schedule Google subreddit discovery once per week (Sunday at 10:00 AM)
+    def scheduled_google_subreddit_discovery():
+        try:
+            logger.info("Starting scheduled Google subreddit discovery...")
+            new_subreddits = google_search_subreddits()
+            if new_subreddits:
+                logger.info(f"Google discovery found {len(new_subreddits)} new subreddits: {', '.join(new_subreddits)}")
+            else:
+                logger.info("No new subreddits found via Google search")
+        except Exception as e:
+            logger.error(f"Error in scheduled Google subreddit discovery: {e}")
+    
+    scheduler.add_job(
+        scheduled_google_subreddit_discovery,
+        trigger=CronTrigger(day_of_week='sun', hour=10, minute=0),
+        id='weekly_google_subreddit_discovery',
+        name='Weekly Google Subreddit Discovery',
+        replace_existing=True
+    )
+    
+    logger.info("Additional scheduled jobs:")
+    logger.info("  - Weekly Google subreddit discovery: Every Sunday at 10:00 AM")
     
     try:
         logger.info("Scheduler is now running. Press Ctrl+C to exit.")
