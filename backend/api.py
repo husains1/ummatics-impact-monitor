@@ -134,14 +134,14 @@ def get_overview():
         # Get recent mentions (last 10 from all platforms)
         cur.execute("""
             SELECT 
-                TO_CHAR(date, 'YYYY-MM-DD')::TEXT as date,
+                TO_CHAR(posted_at, 'YYYY-MM-DD')::TEXT as date,
                 platform,
-                text,
+                content as text,
                 author,
-                url,
-                engagement_score
+                post_url as url,
+                (COALESCE(likes, 0) + COALESCE(retweets, 0) + COALESCE(replies, 0)) as engagement_score
             FROM social_mentions
-            ORDER BY date DESC, engagement_score DESC
+            ORDER BY posted_at DESC
             LIMIT 10
         """)
         recent_mentions = cur.fetchall()
@@ -189,12 +189,12 @@ def get_overview():
         # Simple approach: get most common words from recent tweets/posts
         cur.execute("""
             SELECT 
-                unnest(string_to_array(lower(text), ' ')) as word,
+                unnest(string_to_array(lower(content), ' ')) as word,
                 COUNT(*) as frequency
             FROM social_mentions
-            WHERE date >= %s
+            WHERE posted_at >= %s
             GROUP BY word
-            HAVING LENGTH(unnest(string_to_array(lower(text), ' '))) > 4
+            HAVING LENGTH(unnest(string_to_array(lower(content), ' '))) > 4
             ORDER BY frequency DESC
             LIMIT 15
         """, (monday,))
