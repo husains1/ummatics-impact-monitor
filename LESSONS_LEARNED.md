@@ -56,10 +56,12 @@ Also fixed column references:
   - Correct: Use subquery to unnest first, then filter in outer `WHERE` clause
 - **CRITICAL: Pull from the frontend and check using Chrome DevTools after EACH and EVERY deployment**
   - Open http://3.226.110.16:3000 in Chrome
+  - **Login first** - the dashboard requires authentication with DASHBOARD_PASSWORD from .env
   - Open DevTools (F12) → Network tab
   - Hard refresh (Ctrl+Shift+R) to bypass cache
   - Check for 500 errors or failed API calls
   - Verify all data loads correctly before considering deployment complete
+  - **Note**: Testing API endpoints directly (curl/wget) will fail with "Unauthorized" - must test through the authenticated frontend
 - **When stuck in a loop repeating same actions**: User is likely canceling commands for a reason
   - Don't retry the exact same approach - user is blocking it intentionally
   - Switch to alternative methods (e.g., check logs instead of testing endpoint directly)
