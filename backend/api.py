@@ -163,13 +163,13 @@ def get_overview():
             SELECT 
                 platform,
                 COALESCE(AVG(sentiment_score), 0) as avg_sentiment,
-                COALESCE(AVG(CASE WHEN sentiment_label = 'positive' THEN 1 ELSE 0 END) * 100, 0) as positive_pct,
-                COALESCE(AVG(CASE WHEN sentiment_label = 'neutral' THEN 1 ELSE 0 END) * 100, 0) as neutral_pct,
-                COALESCE(AVG(CASE WHEN sentiment_label = 'negative' THEN 1 ELSE 0 END) * 100, 0) as negative_pct
-            FROM social_sentiment_metrics
-            WHERE date >= %s AND date <= %s
+                COALESCE(AVG(CASE WHEN sentiment = 'positive' THEN 1 ELSE 0 END) * 100, 0) as positive_pct,
+                COALESCE(AVG(CASE WHEN sentiment = 'neutral' THEN 1 ELSE 0 END) * 100, 0) as neutral_pct,
+                COALESCE(AVG(CASE WHEN sentiment = 'negative' THEN 1 ELSE 0 END) * 100, 0) as negative_pct
+            FROM social_mentions
+            WHERE week_start_date = %s
             GROUP BY platform
-        """, (monday, sunday))
+        """, (monday,))
         sentiment_summary = cur.fetchall()
         
         # Get top discovered subreddits

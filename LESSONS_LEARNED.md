@@ -18,6 +18,42 @@
 
 ---
 
+## Schema Column Name Verification (Dec 7, 2025)
+
+### Problem
+After fixing `posted_at`/`content`/`post_url` column names, encountered another 500 error: "column 'sentiment_score' does not exist" when querying `social_sentiment_metrics` table.
+
+### Root Cause
+The sentiment summary query was looking at the **wrong table**:
+- Query used: `social_sentiment_metrics` table with columns `sentiment_score` and `sentiment_label`
+- Actual schema: 
+  - `social_sentiment_metrics` has `average_sentiment_score` (not `sentiment_score`) and no `sentiment_label`
+  - `social_mentions` has `sentiment` (VARCHAR) and `sentiment_score` (DECIMAL)
+
+### Solution
+Changed query to use the correct table and column names:
+```python
+# WRONG - querying aggregated metrics table
+FROM social_sentiment_metrics
+WHERE date >= %s AND date <= %s
+
+# CORRECT - querying individual mentions table
+FROM social_mentions
+WHERE week_start_date = %s
+```
+
+Also fixed column references:
+- `sentiment_label` → `sentiment` (the actual column name)
+- Changed from date range (`date >= %s AND date <= %s`) to single week match (`week_start_date = %s`)
+
+### Key Takeaways
+- **Always verify which table contains the columns you need** - don't assume based on table names
+- Use `grep_search` on `schema.sql` to confirm exact column names AND which table they belong to
+- Aggregated tables (`social_sentiment_metrics`) vs raw data tables (`social_mentions`) have different structures
+- Test queries after ANY schema-related fix to catch cascading column name errors
+
+---
+
 ## Date Serialization Issues (Nov 24-25, 2025)
 
 ### Problem
