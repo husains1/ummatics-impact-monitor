@@ -563,6 +563,44 @@ Created `google_search_subreddits()` function in `backend/ingestion.py`:
 
 ---
 
+## Overview Page Enhancement (Dec 7, 2025)
+
+### Problem
+The overview page was empty with only basic metrics (news mentions, social mentions, citations) and a trends chart. Users needed more actionable insights at a glance.
+
+### Solution
+Enhanced the overview page with 5 new data-rich sections:
+
+1. **Platform Breakdown** - Pie chart showing distribution of mentions across Twitter, Reddit, etc. for the current week
+2. **Sentiment Summary** - Visual breakdown of positive/neutral/negative sentiment percentages by platform with progress bars
+3. **Recent Mentions** - Last 10 social mentions with text preview, author, date, and engagement scores
+4. **Trending Keywords** - Top 15 most frequently used words from current week's mentions (filtered to words >4 characters)
+5. **Recently Discovered Subreddits** - Grid showing latest 10 subreddits discovered via automated monitoring
+
+### Implementation
+**Backend (`/api/overview`):**
+- Added 5 new SQL queries to fetch enriched data
+- Used PostgreSQL's `string_to_array` and `unnest` for keyword extraction
+- Filtered trending keywords by length to avoid common stop words
+- Added sentiment percentage calculations using `AVG(CASE WHEN...)` pattern
+
+**Frontend (`OverviewTab` component):**
+- Added responsive grid layouts with `grid-cols-1 lg:grid-cols-2`
+- Implemented PieChart for platform breakdown using Recharts
+- Created custom sentiment progress bars with color coding (green/gray/red)
+- Added scrollable mention feed with text truncation
+- Styled trending keywords as pill badges with frequency counts
+- Created subreddit grid cards with discovery dates
+
+### Key Takeaways
+- Overview pages should provide actionable insights, not just metrics
+- Combining multiple data visualizations (pie charts, progress bars, lists) creates engaging dashboards
+- Always include fallback UI for empty states (`No data available` messages)
+- Limit trending keywords by character length to filter noise
+- Grid layouts work well for responsive design across device sizes
+
+---
+
 ## Local Container Usage Policy (Dec 7, 2025)
 
 ### Policy
