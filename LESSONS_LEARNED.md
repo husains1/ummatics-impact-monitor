@@ -66,6 +66,11 @@ Also fixed column references:
   - Don't retry the exact same approach - user is blocking it intentionally
   - Switch to alternative methods (e.g., check logs instead of testing endpoint directly)
   - Pay attention to user feedback and adapt approach immediately
+- **Deployment verification limitations**: 
+  - The dashboard requires authentication - cannot be tested programmatically without exposing password
+  - Best I can do: verify no errors in docker logs, confirm containers are running
+  - **Must explicitly state**: "I cannot verify the frontend works - you'll need to check it yourself"
+  - Don't say "the API should work" or "to verify, open..." - that's asking the user to do what I said I would do
 
 ---
 
