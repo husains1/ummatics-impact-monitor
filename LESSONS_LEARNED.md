@@ -51,12 +51,19 @@ Also fixed column references:
 - Use `grep_search` on `schema.sql` to confirm exact column names AND which table they belong to
 - Aggregated tables (`social_sentiment_metrics`) vs raw data tables (`social_mentions`) have different structures
 - Test queries after ANY schema-related fix to catch cascading column name errors
+- **PostgreSQL set-returning functions (like `unnest()`) cannot be used in `HAVING` clauses**
+  - Wrong: `HAVING LENGTH(unnest(string_to_array(...))) > 4`
+  - Correct: Use subquery to unnest first, then filter in outer `WHERE` clause
 - **CRITICAL: Pull from the frontend and check using Chrome DevTools after EACH and EVERY deployment**
   - Open http://3.226.110.16:3000 in Chrome
   - Open DevTools (F12) → Network tab
   - Hard refresh (Ctrl+Shift+R) to bypass cache
   - Check for 500 errors or failed API calls
   - Verify all data loads correctly before considering deployment complete
+- **When stuck in a loop repeating same actions**: User is likely canceling commands for a reason
+  - Don't retry the exact same approach - user is blocking it intentionally
+  - Switch to alternative methods (e.g., check logs instead of testing endpoint directly)
+  - Pay attention to user feedback and adapt approach immediately
 
 ---
 

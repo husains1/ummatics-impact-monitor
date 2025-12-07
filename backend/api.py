@@ -189,12 +189,15 @@ def get_overview():
         # Simple approach: get most common words from recent tweets/posts
         cur.execute("""
             SELECT 
-                unnest(string_to_array(lower(content), ' ')) as word,
+                word,
                 COUNT(*) as frequency
-            FROM social_mentions
-            WHERE posted_at >= %s
+            FROM (
+                SELECT unnest(string_to_array(lower(content), ' ')) as word
+                FROM social_mentions
+                WHERE posted_at >= %s
+            ) words
+            WHERE LENGTH(word) > 4
             GROUP BY word
-            HAVING LENGTH(unnest(string_to_array(lower(content), ' '))) > 4
             ORDER BY frequency DESC
             LIMIT 15
         """, (monday,))
