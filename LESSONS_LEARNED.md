@@ -67,10 +67,15 @@ Also fixed column references:
   - Switch to alternative methods (e.g., check logs instead of testing endpoint directly)
   - Pay attention to user feedback and adapt approach immediately
 - **Deployment verification limitations**: 
-  - The dashboard requires authentication - cannot be tested programmatically without exposing password
-  - Best I can do: verify no errors in docker logs, confirm containers are running
-  - **Must explicitly state**: "I cannot verify the frontend works - you'll need to check it yourself"
-  - Don't say "the API should work" or "to verify, open..." - that's asking the user to do what I said I would do
+  - ~~The dashboard requires authentication - cannot be tested programmatically without exposing password~~
+  - **CAN use .env file to get DASHBOARD_PASSWORD for testing** - it's in .gitignore so won't be committed
+  - Test script:
+    ```bash
+    TOKEN=$(curl -s -X POST http://3.226.110.16:3000/api/auth -H "Content-Type: application/json" -d '{"password":"'$(grep DASHBOARD_PASSWORD .env | cut -d'=' -f2)'"}' | python3 -c "import sys, json; print(json.load(sys.stdin).get('token', ''))")
+    curl -s -H "Authorization: Bearer $TOKEN" http://3.226.110.16:3000/api/overview | python3 -c "import sys, json; data = json.load(sys.stdin); print('✓ Success!' if 'current_week' in data else '✗ Error: ' + str(data.get('error')))"
+    ```
+  - **ALWAYS verify .env is in .gitignore before reading it**: `cat .gitignore | grep "\.env"`
+  - After deployment, authenticate with the API and test all endpoints to confirm no 500 errors
 
 ---
 
