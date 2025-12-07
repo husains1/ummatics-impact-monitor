@@ -1,5 +1,23 @@
 # Lessons Learned - Ummatics Impact Monitor
 
+## Critical Deployment Facts (Dec 7, 2025)
+
+### THIS PROJECT'S DEPLOYMENT ARCHITECTURE
+**Read this FIRST before making any statements about the deployment:**
+
+- **EC2 Instance IP**: 3.226.110.16
+- **Frontend/Dashboard URL**: http://3.226.110.16:3000 (port 3000, NOT 5000)
+- **Backend API URL**: http://3.226.110.16:5000 (internal use only, typically not accessed directly by users)
+- **Primary User Access**: Port 3000 frontend, which internally calls the backend API
+
+**NEVER say "localhost" when referring to the public deployment URLs.**
+- localhost only works from INSIDE the EC2 instance
+- External access uses the public IP: 3.226.110.16
+- Frontend serves the dashboard on port 3000
+- Backend API on port 5000 is for the frontend to call, not for direct user access
+
+---
+
 ## Date Serialization Issues (Nov 24-25, 2025)
 
 ### Problem
