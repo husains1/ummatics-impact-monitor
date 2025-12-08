@@ -113,6 +113,7 @@ CREATE TABLE citations (
     publication_date DATE,
     cited_by_count INTEGER DEFAULT 0,
     source_url TEXT,
+    is_dead BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );

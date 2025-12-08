@@ -10,6 +10,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from ingestion import run_full_ingestion
 from ingestion import update_sentiment_metrics
 from ingestion import google_search_subreddits
+from ingestion import cleanup_citations
 from datetime import date, timedelta
 
 # Configure logging
@@ -24,6 +25,8 @@ def scheduled_ingestion():
     """Wrapper function for scheduled ingestion with error handling"""
     try:
         logger.info("Starting scheduled data ingestion...")
+        # Run citation cleanup before ingestion to remove dead URLs and duplicates
+        cleanup_citations()
         run_full_ingestion()
         logger.info("Scheduled data ingestion completed successfully")
     except Exception as e:

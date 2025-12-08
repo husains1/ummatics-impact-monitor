@@ -495,6 +495,7 @@ def get_citations():
                 source_url,
                 updated_at
             FROM citations
+            WHERE is_dead = FALSE
             ORDER BY publication_date DESC NULLS LAST
             LIMIT 20
         """)
@@ -511,6 +512,7 @@ def get_citations():
                 source_url,
                 updated_at
             FROM citations
+            WHERE is_dead = FALSE
             ORDER BY publication_date DESC NULLS LAST
             LIMIT 10
         """)

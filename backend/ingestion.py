@@ -937,6 +937,113 @@ def ingest_twitter(max_tweets=100, days_back=None):
         logger.error(traceback.format_exc())
 
 
+def cleanup_citations():
+    """Clean up citations: check for dead URLs and remove duplicates"""
+    logger.info("Starting citation cleanup...")
+    
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        # Get all citations that aren't already marked as dead
+        cur.execute("""
+            SELECT id, source_url, title, authors, publication_date, created_at 
+            FROM citations 
+            WHERE is_dead = FALSE
+            ORDER BY title, publication_date DESC, created_at DESC
+        """)
+        citations = cur.fetchall()
+        
+        dead_count = 0
+        duplicate_count = 0
+        checked_count = 0
+        
+        # Track seen titles to identify duplicates
+        seen_titles = {}  # title -> (id, has_working_url, publication_date, created_at)
+        
+        for citation in citations:
+            cit_id, source_url, title, authors, pub_date, created_at = citation
+            checked_count += 1
+            
+            # Check if URL is accessible
+            is_url_dead = False
+            if source_url:
+                try:
+                    # Use HEAD request to check if URL exists (faster than GET)
+                    response = requests.head(source_url, timeout=10, allow_redirects=True)
+                    # Consider 4xx and 5xx status codes as dead
+                    if response.status_code >= 400:
+                        is_url_dead = True
+                        logger.info(f"Dead URL (HTTP {response.status_code}): {source_url[:80]}")
+                except Exception as e:
+                    # Connection errors, timeouts, etc. also indicate dead URL
+                    is_url_dead = True
+                    logger.info(f"Dead URL (error: {str(e)[:50]}): {source_url[:80]}")
+            else:
+                # No URL means we can't verify it
+                is_url_dead = True
+            
+            # Handle duplicates by title
+            if title in seen_titles:
+                prev_id, prev_has_working_url, prev_pub_date, prev_created = seen_titles[title]
+                
+                # Decide which one to keep:
+                # 1. Prefer the one with a working URL
+                # 2. If both working or both dead, keep the newer publication date
+                # 3. If same pub date, keep the one created more recently
+                
+                keep_current = False
+                if not is_url_dead and prev_has_working_url:
+                    # Both working - keep newer pub date or newer created_at
+                    keep_current = (pub_date, created_at) > (prev_pub_date, prev_created)
+                elif is_url_dead and not prev_has_working_url:
+                    # Both dead - keep newer pub date or newer created_at
+                    keep_current = (pub_date, created_at) > (prev_pub_date, prev_created)
+                elif not is_url_dead:
+                    # Current has working URL, previous doesn't
+                    keep_current = True
+                # else: previous has working URL, current doesn't - keep previous
+                
+                if keep_current:
+                    # Mark previous as duplicate (dead)
+                    cur.execute("UPDATE citations SET is_dead = TRUE WHERE id = %s", (prev_id,))
+                    duplicate_count += 1
+                    logger.info(f"Marked duplicate as dead: {title[:60]}... (ID: {prev_id})")
+                    # Update tracking
+                    seen_titles[title] = (cit_id, not is_url_dead, pub_date, created_at)
+                    # Mark current as dead if its URL is dead
+                    if is_url_dead:
+                        cur.execute("UPDATE citations SET is_dead = TRUE WHERE id = %s", (cit_id,))
+                        dead_count += 1
+                else:
+                    # Mark current as duplicate (dead)
+                    cur.execute("UPDATE citations SET is_dead = TRUE WHERE id = %s", (cit_id,))
+                    duplicate_count += 1
+                    logger.info(f"Marked duplicate as dead: {title[:60]}... (ID: {cit_id})")
+            else:
+                # First occurrence of this title
+                seen_titles[title] = (cit_id, not is_url_dead, pub_date, created_at)
+                # Mark as dead if URL is dead
+                if is_url_dead:
+                    cur.execute("UPDATE citations SET is_dead = TRUE WHERE id = %s", (cit_id,))
+                    dead_count += 1
+        
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        logger.info(f"Citation cleanup complete:")
+        logger.info(f"  - Checked {checked_count} citations")
+        logger.info(f"  - Marked {dead_count} as dead (broken URLs)")
+        logger.info(f"  - Marked {duplicate_count} as dead (duplicates)")
+        logger.info(f"  - Total marked as dead: {dead_count + duplicate_count}")
+        
+    except Exception as e:
+        logger.error(f"Error in citation cleanup: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+
+
 def ingest_openalex():
     """Fetch citation data from OpenAlex API"""
     logger.info("Starting OpenAlex ingestion...")
