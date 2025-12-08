@@ -1085,8 +1085,42 @@ function RedditTab({ data, sentimentData, page, setPage }) {
 function CitationsTab({ data }) {
   const { weekly_metrics, top_works, recent_citations } = data
 
+  // Icon components for citation types
+  const OrganizationIcon = () => (
+    <svg className="inline w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" title="Organization/Institution Citation">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
+    </svg>
+  )
+
+  const WordIcon = () => (
+    <svg className="inline w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" title="Word/Concept Usage">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+    </svg>
+  )
+
+  const getCitationIcon = (citationType) => {
+    if (citationType === 'organization') return <OrganizationIcon />
+    if (citationType === 'word') return <WordIcon />
+    return null
+  }
+
   return (
     <div className="space-y-6">
+      {/* Citation Type Legend */}
+      <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+        <h3 className="text-sm font-semibold text-blue-900 mb-2">Citation Types:</h3>
+        <div className="flex gap-6 text-sm text-blue-800">
+          <div className="flex items-center">
+            <OrganizationIcon />
+            <span>Organization/Institution (ummatics.org)</span>
+          </div>
+          <div className="flex items-center">
+            <WordIcon />
+            <span>Word/Concept Usage (ummatic)</span>
+          </div>
+        </div>
+      </div>
+
       {/* Citation Trends */}
       <div className="bg-white p-6 rounded-lg shadow">
         <h2 className="text-xl font-semibold mb-4">Citation Growth</h2>
@@ -1124,11 +1158,16 @@ function CitationsTab({ data }) {
               {top_works.slice(0, 10).map((work, idx) => (
                 <tr key={idx}>
                   <td className="px-6 py-4 text-sm text-gray-900">
-                    {work.doi ? (
-                      <a href={`https://doi.org/${work.doi}`} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
-                        {work.title}
-                      </a>
-                    ) : work.title}
+                    <div className="flex items-start">
+                      {getCitationIcon(work.citation_type)}
+                      <div className="flex-1">
+                        {work.doi ? (
+                          <a href={`https://doi.org/${work.doi}`} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
+                            {work.title}
+                          </a>
+                        ) : work.title}
+                      </div>
+                    </div>
                   </td>
                   <td className="px-6 py-4 text-sm text-gray-500">{work.authors?.slice(0, 50)}...</td>
                   <td className="px-6 py-4 text-sm text-gray-500">

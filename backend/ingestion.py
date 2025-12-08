@@ -1107,20 +1107,51 @@ def ingest_openalex():
                 
                 source_url = f"https://openalex.org/{work_id.split('/')[-1]}"
                 
+                # Classify citation type: organization vs word usage
+                # Check title, abstract, and display_name for ummatics.org references
+                title_lower = title.lower() if title else ''
+                abstract = work.get('abstract', '') or ''
+                abstract_lower = abstract.lower() if abstract else ''
+                display_name = work.get('display_name', '') or ''
+                display_name_lower = display_name.lower() if display_name else ''
+                
+                citation_type = 'word'  # Default to word usage
+                
+                # Check for organization references
+                org_indicators = [
+                    'ummatics.org',
+                    'ummatics organization',
+                    'ummatics institute',
+                    'ummatics foundation',
+                    'ummatics research',
+                    'ummatics journal'
+                ]
+                
+                full_text = f"{title_lower} {abstract_lower} {display_name_lower}"
+                for indicator in org_indicators:
+                    if indicator in full_text:
+                        citation_type = 'organization'
+                        break
+                
+                # If it mentions "ummatics" (not just "ummatic"), more likely organization
+                if citation_type == 'word' and 'ummatics' in full_text and 'ummatic' not in full_text.replace('ummatics', ''):
+                    citation_type = 'organization'
+                
                 # Check if work already exists
                 cur.execute("SELECT work_id FROM citations WHERE work_id = %s", (work_id,))
                 exists = cur.fetchone()
                 
                 # Insert or update citation
                 cur.execute("""
-                    INSERT INTO citations (work_id, doi, title, authors, publication_date, cited_by_count, source_url, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    INSERT INTO citations (work_id, doi, title, authors, publication_date, cited_by_count, source_url, citation_type, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (work_id) 
                     DO UPDATE SET 
                         cited_by_count = EXCLUDED.cited_by_count,
+                        citation_type = EXCLUDED.citation_type,
                         updated_at = EXCLUDED.updated_at
                     RETURNING (xmax = 0) AS inserted
-                """, (work_id, doi, title, authors, publication_date, cited_by_count, source_url, datetime.now()))
+                """, (work_id, doi, title, authors, publication_date, cited_by_count, source_url, citation_type, datetime.now()))
                 
                 result = cur.fetchone()
                 if result and result[0]:

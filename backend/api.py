@@ -493,6 +493,7 @@ def get_citations():
                 cited_by_count,
                 doi,
                 source_url,
+                citation_type,
                 updated_at
             FROM citations
             WHERE is_dead = FALSE
@@ -510,6 +511,7 @@ def get_citations():
                 cited_by_count,
                 doi,
                 source_url,
+                citation_type,
                 updated_at
             FROM citations
             WHERE is_dead = FALSE

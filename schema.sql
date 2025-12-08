@@ -114,6 +114,7 @@ CREATE TABLE citations (
     cited_by_count INTEGER DEFAULT 0,
     source_url TEXT,
     is_dead BOOLEAN DEFAULT FALSE,
+    citation_type VARCHAR(20) DEFAULT 'unknown',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );

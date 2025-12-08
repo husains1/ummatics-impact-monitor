@@ -18,6 +18,57 @@
 
 ---
 
+## Citation Type Classification with Icons (Dec 7-8, 2025)
+
+### Problem
+Need to distinguish between citations that reference "ummatic" (word/concept usage) vs "ummatics.org" (the organization) in the academic citations display.
+
+### Solution
+Implemented a three-part system:
+
+1. **Database**: Added `citation_type` VARCHAR(20) column with values: 'organization', 'word', 'unknown'
+
+2. **Classification Logic** (backend/ingestion.py):
+   - Checks title, abstract, and display_name for organization indicators:
+     - 'ummatics.org', 'ummatics organization', 'ummatics institute', etc.
+   - If "ummatics" appears without "ummatic", likely organization reference
+   - Default classification: 'word'
+
+3. **Frontend Icons** (frontend/src/App.jsx):
+   - **Organization icon** (building/institution): For ummatics.org citations
+   - **Word icon** (document/text): For ummatic concept usage
+   - Legend at top of Citations tab explaining icon meanings
+   - Icons displayed inline with citation titles
+
+### Implementation Details
+```javascript
+// Frontend icon components
+const OrganizationIcon = () => <svg>...</svg>  // Building icon
+const WordIcon = () => <svg>...</svg>           // Document icon
+
+const getCitationIcon = (citationType) => {
+  if (citationType === 'organization') return <OrganizationIcon />
+  if (citationType === 'word') return <WordIcon />
+  return null
+}
+```
+
+```python
+# Backend classification
+org_indicators = ['ummatics.org', 'ummatics organization', ...]
+full_text = f"{title_lower} {abstract_lower} {display_name_lower}"
+citation_type = 'organization' if any indicator found else 'word'
+```
+
+### Key Takeaways
+- Visual distinction helps users quickly identify citation types
+- Classification happens during ingestion, stored in database for fast queries
+- Icons use SVG for scalability and consistent appearance
+- Legend provides immediate context for new users
+- Current distribution: ~194 word citations, 5 unknown (as of Dec 8, 2025)
+
+---
+
 ## Citation Cleanup Implementation (Dec 7, 2025)
 
 ### Problem
