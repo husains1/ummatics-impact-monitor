@@ -57,6 +57,10 @@ if title in seen_titles:
 - Track duplicates by title, not by work_id (work_id might differ for same paper)
 - Run cleanup BEFORE ingestion to prevent re-inserting dead citations
 - Always check schema column names before adding new columns (verified `is_dead` added correctly)
+- **Limitation**: URL validation is point-in-time - a URL working during cleanup might fail later (502 errors can be intermittent)
+- **Similar but different papers**: Citations with similar titles/authors but different work_ids are NOT duplicates
+  - Example: "Democracy in the Framework of Shura" vs "Islam and Democracy" - both by same authors, different papers
+  - Duplicate detection only marks citations with EXACTLY the same title as duplicates
 
 ---
 
