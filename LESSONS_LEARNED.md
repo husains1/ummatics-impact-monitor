@@ -18,6 +18,48 @@
 
 ---
 
+## Citation Cleanup Implementation (Dec 7, 2025)
+
+### Problem
+Duplicate citations and dead URLs appearing in the UI. Example duplicates:
+- "Editorial Note David H. Warren..." appeared twice
+- "From Ummatic Muslims to State-centered Bosniacs" appeared twice
+- Some URLs returned 404 errors (e.g., https://jkk.jurnal.unej.ac.id/index.php/JKK/article/view/53703)
+
+### Solution
+Implemented `cleanup_citations()` function that runs before each citation ingestion:
+
+1. **Added `is_dead` column** to citations table (BOOLEAN DEFAULT FALSE)
+2. **URL validation**: Uses `requests.head()` to check if each citation URL is accessible
+   - HTTP 4xx/5xx status codes → mark as dead
+   - Connection errors/timeouts → mark as dead
+3. **Duplicate detection**: Tracks citations by title
+   - Prefers citations with working URLs over dead ones
+   - If both working or both dead, keeps newer publication date
+   - If same pub date, keeps more recently created entry
+4. **Filtering**: API queries now include `WHERE is_dead = FALSE`
+
+### Implementation Details
+```python
+# Check URL with HEAD request (faster than GET)
+response = requests.head(source_url, timeout=10, allow_redirects=True)
+if response.status_code >= 400:
+    is_url_dead = True
+
+# Duplicate resolution logic
+if title in seen_titles:
+    # Keep the one with working URL, or newer pub_date, or newer created_at
+    keep_current = decide_which_to_keep(...)
+```
+
+### Key Takeaways
+- Use `requests.head()` instead of `GET` for URL validation (much faster)
+- Track duplicates by title, not by work_id (work_id might differ for same paper)
+- Run cleanup BEFORE ingestion to prevent re-inserting dead citations
+- Always check schema column names before adding new columns (verified `is_dead` added correctly)
+
+---
+
 ## Schema Column Name Verification (Dec 7, 2025)
 
 ### Problem
