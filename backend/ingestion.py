@@ -970,7 +970,11 @@ def cleanup_citations():
             if source_url:
                 try:
                     # Use HEAD request to check if URL exists (faster than GET)
-                    response = requests.head(source_url, timeout=10, allow_redirects=True)
+                    # Use browser-like user agent to match actual user experience
+                    headers = {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                    }
+                    response = requests.head(source_url, timeout=10, allow_redirects=True, headers=headers)
                     # Consider 4xx and 5xx status codes as dead
                     if response.status_code >= 400:
                         is_url_dead = True

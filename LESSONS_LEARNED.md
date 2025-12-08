@@ -54,6 +54,9 @@ if title in seen_titles:
 
 ### Key Takeaways
 - Use `requests.head()` instead of `GET` for URL validation (much faster)
+- **CRITICAL: Use browser-like User-Agent header** - some sites return different status codes based on user agent
+  - Example: https://jurnalfuf.uinsa.ac.id/... returns 403 with default user agent, 502 with browser user agent
+  - Without browser user agent, cleanup might miss URLs that are actually dead for users
 - Track duplicates by title, not by work_id (work_id might differ for same paper)
 - Run cleanup BEFORE ingestion to prevent re-inserting dead citations
 - Always check schema column names before adding new columns (verified `is_dead` added correctly)
