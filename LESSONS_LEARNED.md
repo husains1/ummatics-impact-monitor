@@ -80,6 +80,93 @@ if content.startswith('RT @'):
 
 ---
 
+## Twitter API Quota Management (Dec 14, 2025)
+
+### Problem: Free Tier Quota Exhausted in 2 Days
+
+**Issue**: Twitter Developer console showed 102/100 posts accessed in just 2 days of the billing period (Dec 13-Jan 13, 2025). At this rate, would use ~1,530 API calls/month instead of the 100 allowed on free tier.
+
+**Investigation**:
+- Database showed 67 tweets stored in current billing period
+- Logs showed: 45 tweets ingested Dec 13 + 7 tweets Dec 14 = 52 total
+- Discrepancy: API counted 102 calls, but only 67 in database
+- Root cause: ~35 calls returned retweets that were filtered out AFTER API call
+
+**Two Problems Identified**:
+
+1. **Retweets counted against quota before filtering**
+   - Twitter API returns both original tweets AND retweets in search results
+   - Retweet filter in ingestion.py (`if content.startswith('RT @'): continue`) runs AFTER API call
+   - Each retweet counts against quota even though it's discarded
+   - ~35% of API calls wasted on retweets
+
+2. **Hourly ingestion too frequent**
+   - Scheduler ran ingestion every hour (24x/day)
+   - 24 runs/day × 30 days = 720 potential API calls/month
+   - Even with perfect filtering, still 7x over quota
+
+**Solution: Two-Part Optimization**
+
+**Part 1: Exclude Retweets at API Level**
+```python
+# In ingestion.py - Twitter search queries
+search_queries = [
+    '"ummatics" -is:retweet -from:ummatics',
+    '"ummatic" -is:retweet -from:ummatics'
+]
+```
+
+Adding `-is:retweet` to the Twitter API query prevents retweets from being returned, so they don't count against quota.
+
+**Part 2: Reduce Ingestion Frequency**
+```python
+# In scheduler.py - Changed from hourly to 3x daily
+scheduler.add_job(
+    scheduled_ingestion,
+    trigger=CronTrigger(hour='8,14,20', minute=0),  # 8 AM, 2 PM, 8 PM UTC
+    id='three_daily_ingestion',
+    name='3x Daily Data Ingestion',
+    replace_existing=True
+)
+```
+
+**Impact**:
+- Before: ~1,530 API calls/month (hourly + retweets)
+- After: ~90 API calls/month (3x daily, no retweets)
+- **93% reduction** in API usage
+- Safely under 100/month free tier limit
+- Still provides fresh data 3x per day
+
+**Sentiment Job Updated**:
+```python
+# Run sentiment update after each ingestion
+scheduler.add_job(
+    scheduled_sentiment,
+    trigger=CronTrigger(hour='8,14,20', minute=30),  # 30 minutes after ingestion
+    id='three_daily_sentiment',
+    name='3x Daily Sentiment Update',
+    replace_existing=True
+)
+```
+
+**Key Learnings**:
+- ✅ Filter at API level when possible (saves quota)
+- ✅ Only filter client-side when API doesn't support it
+- ✅ Calculate actual API usage before deploying (don't guess)
+- ✅ Monitor developer console during billing period
+- ✅ 3x daily is sufficient for social media monitoring (not real-time)
+- ✅ Align dependent jobs (sentiment) with ingestion schedule
+
+**Alternative Approaches Considered**:
+1. **Paid tier ($100/month)** - Too expensive for this project
+2. **Use Twitter's streaming API** - Requires enterprise tier
+3. **Reduce to daily** - Less fresh data, but would work (30 calls/month)
+4. **Use since_id parameter** - Doesn't reduce API calls, just payload size
+
+**Recommendation**: 3x daily with `-is:retweet` filter is optimal balance of cost and freshness.
+
+---
+
 ## Database Backup and Restore (Dec 14, 2025)
 
 ### S3 Backup Infrastructure
@@ -988,13 +1075,13 @@ else:
 
 ---
 
-## Backend Code Deployment Pitfall (Nov 25, 2025)
+## Backend Code Deployment Pitfall (Nov 25-Dec 14, 2025)
 
-### Problem
+### Problem (Nov 25)
 Made backend code changes locally, built Docker image, pushed to ECR, but the changes didn't take effect on EC2. Falsely reported the fix was deployed when it wasn't.
 
-### Root Cause
-The `docker-compose.yml` on EC2 uses `build: ./backend` instead of pulling from ECR. When I ran:
+### Root Cause (Nov 25)
+The `docker-compose.yml` originally used `build: ./backend` instead of pulling from ECR. When I ran:
 ```bash
 docker compose build --no-cache api  # Built using LOCAL code on EC2
 docker compose up -d api
@@ -1002,57 +1089,77 @@ docker compose up -d api
 
 This rebuilt the container using the **old code still on the EC2 instance** (before `git pull`), not the updated code I had pushed to GitHub.
 
-### What I Missed
-1. **Forgot to sync code to EC2 first**: Made changes locally, committed to git, but EC2 still had old code
-2. **Docker Compose Build Behavior**: `docker compose build` uses the local filesystem, NOT ECR images
-3. **Premature Success Declaration**: Pushed to ECR but that image was never used
-4. **Failed to Verify**: Didn't check if the actual code changes were present in the running container
+### Updated Problem (Dec 14, 2025) - CURRENT DEPLOYMENT METHOD
 
-### Correct Deployment Process for Backend Changes
-
-**CRITICAL: NO GIT OPERATIONS ON EC2 - Credentials must stay local**
-
-**Method 1: Copy Files via SSH (Recommended for Quick Fixes)**
-```bash
-# Copy changed backend files from local to EC2
-scp -i ~/.ssh/ummatics-monitor-key.pem backend/api.py ubuntu@3.226.110.16:/home/ubuntu/ummatics-impact-monitor/backend/
-scp -i ~/.ssh/ummatics-monitor-key.pem backend/ingestion.py ubuntu@3.226.110.16:/home/ubuntu/ummatics-impact-monitor/backend/
-
-# Rebuild and restart container on EC2
-ssh -i ~/.ssh/ummatics-monitor-key.pem ubuntu@3.226.110.16 'cd /home/ubuntu/ummatics-impact-monitor && docker compose build --no-cache api && docker compose up -d api'
+**CRITICAL DISCOVERY**: The `docker-compose.yml` was updated to use ECR images:
+```yaml
+api:
+  image: 182758038500.dkr.ecr.us-east-1.amazonaws.com/ummatics-impact-monitor:backend-latest
+scheduler:
+  image: 182758038500.dkr.ecr.us-east-1.amazonaws.com/ummatics-impact-monitor:backend-latest
+frontend:
+  image: 182758038500.dkr.ecr.us-east-1.amazonaws.com/ummatics-impact-monitor:frontend-latest
 ```
 
-**Method 2: Use ECR for Backend (Recommended for Production)**
+**This means:**
+- ❌ `docker compose build` does NOTHING (no `build:` directive, only `image:`)
+- ❌ `docker compose up -d --build` also does NOTHING (no local Dockerfile to build)
+- ✅ `docker compose pull` pulls latest images from ECR
+- ✅ Must push to ECR first, then pull on EC2
+
+### Correct Deployment Process for Backend Changes (Dec 14, 2025)
+
+**ONLY ONE METHOD WORKS: Build locally → Push to ECR → Pull on EC2**
+
 ```bash
-# Build backend locally
+# 1. Build backend image locally
 cd /home/tahir/ummatics-impact-monitor
 docker build -t ummatics-backend:latest -f backend/Dockerfile backend/
 
-# Tag and push to ECR
+# 2. Tag and push to ECR
 docker tag ummatics-backend:latest 182758038500.dkr.ecr.us-east-1.amazonaws.com/ummatics-impact-monitor:backend-latest
 aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 182758038500.dkr.ecr.us-east-1.amazonaws.com
 docker push 182758038500.dkr.ecr.us-east-1.amazonaws.com/ummatics-impact-monitor:backend-latest
 
-# Pull and restart on EC2
-ssh -i ~/.ssh/ummatics-monitor-key.pem ubuntu@3.226.110.16 'cd /home/ubuntu/ummatics-impact-monitor && docker compose pull api && docker compose up -d api'
+# 3. Pull and restart on EC2
+ssh -i ~/.ssh/ummatics-monitor-key.pem ubuntu@3.226.110.16 'cd /home/ubuntu/ummatics-impact-monitor && docker compose pull api scheduler && docker compose up -d api scheduler'
+```
+
+**Frontend Deployment (Same Process)**
+```bash
+# 1. Build frontend locally
+cd /home/tahir/ummatics-impact-monitor/frontend
+npm run build
+cd ..
+docker build -t ummatics-frontend:latest -f frontend/Dockerfile frontend/
+
+# 2. Tag and push to ECR
+docker tag ummatics-frontend:latest 182758038500.dkr.ecr.us-east-1.amazonaws.com/ummatics-impact-monitor:frontend-latest
+docker push 182758038500.dkr.ecr.us-east-1.amazonaws.com/ummatics-impact-monitor:frontend-latest
+
+# 3. Pull and restart on EC2
+ssh -i ~/.ssh/ummatics-monitor-key.pem ubuntu@3.226.110.16 'cd /home/ubuntu/ummatics-impact-monitor && docker compose pull frontend && docker compose up -d frontend'
 ```
 
 **Verification**
 ```bash
-# Verify container is running with new code
-ssh -i ~/.ssh/ummatics-monitor-key.pem ubuntu@3.226.110.16 'docker compose ps api'
+# Verify containers are running with new images
+ssh -i ~/.ssh/ummatics-monitor-key.pem ubuntu@3.226.110.16 'docker compose ps'
 
-# Test the API endpoint to confirm behavior changed
-curl -s -H "Authorization: Bearer token" "http://3.226.110.16:5000/api/endpoint" | python3 -c "verification script"
+# Check actual code in container
+ssh -i ~/.ssh/ummatics-monitor-key.pem ubuntu@3.226.110.16 'docker exec ummatics_scheduler head -70 /app/scheduler.py | tail -25'
+
+# Test the API endpoint
+curl "http://3.226.110.16:5000/api/metrics"
 ```
 
-### Key Takeaways
-- **NEVER use git on EC2**: No git pull, git clone, git commit, or git push - keep credentials local
-- **Two deployment methods**: Copy files via SCP, OR build locally + push to ECR
-- **Frontend always uses ECR**: Build locally → Push to ECR → Pull on EC2
-- **Backend can use either**: SCP for quick fixes, ECR for production deployments
-- **Always verify**: Test API endpoints after deployment to confirm changes took effect
-- **Check container contents**: Use `docker exec` or SSH to verify files if unsure
+### Key Takeaways (UPDATED Dec 14, 2025)
+- **ALL services use ECR images**: api, scheduler, frontend - NO local builds on EC2
+- **`docker compose build` is useless**: It does nothing when using `image:` instead of `build:`
+- **MUST push to ECR**: Local changes only appear on EC2 after ECR push + pull
+- **git on EC2 is irrelevant**: Code comes from ECR images, not local filesystem
+- **Always verify**: Check container contents with `docker exec` to confirm deployment
+- **Both containers share backend-latest**: api and scheduler use the same ECR backend image
 
 ---
 
