@@ -50,17 +50,18 @@ def main():
         #replace_existing=True
     #)
     
+    # Schedule ingestion 3x daily (8 AM, 2 PM, 8 PM UTC) to stay within Twitter's 100 posts/month limit
+    # With 3 runs/day * 30 days = 90 API calls/month (safely under 100 limit)
     scheduler.add_job(
-    scheduled_ingestion,
-    trigger=CronTrigger(hour=9, minute=0),  
-    id='daily_ingestion',
-    name='Daily Data Ingestion',
-    replace_existing=True
+        scheduled_ingestion,
+        trigger=CronTrigger(hour='8,14,20', minute=0),
+        id='three_daily_ingestion',
+        name='3x Daily Data Ingestion',
+        replace_existing=True
     )
 
     logger.info("Scheduler configured:")
-    #logger.info("  - Weekly data ingestion: Every Monday at 9:00 AM")
-    logger.info("  - Daily data ingestion: Every day at 9:00 AM")
+    logger.info("  - Data ingestion: 3x daily at 8 AM, 2 PM, 8 PM UTC (Twitter quota optimization)")
     logger.info("=" * 60)
     
     # Run initial ingestion on startup
@@ -79,12 +80,12 @@ def main():
         except Exception as e:
             logger.error(f"Error in scheduled sentiment update: {e}")
 
-    # Schedule daily sentiment update at 09:30 (shortly after ingestion)
+    # Schedule sentiment update 3x daily at :30 (shortly after each ingestion)
     scheduler.add_job(
         scheduled_sentiment,
-        trigger=CronTrigger(hour=9, minute=30),
-        id='daily_sentiment',
-        name='Daily Sentiment Update',
+        trigger=CronTrigger(hour='8,14,20', minute=30),
+        id='three_daily_sentiment',
+        name='3x Daily Sentiment Update',
         replace_existing=True
     )
     

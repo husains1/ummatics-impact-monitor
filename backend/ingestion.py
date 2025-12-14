@@ -883,9 +883,10 @@ def ingest_twitter(max_tweets=100, days_back=None):
                 client = ApifyClient(APIFY_API_TOKEN)
                 
                 # Use quoted phrases for exact word matching (not substring)
+                # Exclude retweets at API level to save quota (-is:retweet)
                 search_queries = [
-                    '"ummatics" -from:ummatics',
-                    '"ummatic" -from:ummatics'
+                    '"ummatics" -is:retweet -from:ummatics',
+                    '"ummatic" -is:retweet -from:ummatics'
                 ]
                 
                 for search_query in search_queries:
