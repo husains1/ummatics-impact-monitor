@@ -1,0 +1,2 @@
+# Boto3 included in Lambda runtime by default
+# No additional dependencies needed for basic Lambda

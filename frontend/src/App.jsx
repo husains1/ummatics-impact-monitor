@@ -16,6 +16,7 @@ function App() {
   const [loading, setLoading] = useState(false)
   const [twitterPage, setTwitterPage] = useState(1)
   const [redditPage, setRedditPage] = useState(1)
+  const [citationPage, setCitationPage] = useState(1)
 
   // Data states
   const [overviewData, setOverviewData] = useState(null)
@@ -102,7 +103,9 @@ function App() {
         fetchData('/sentiment?platform=Reddit', setRedditSentimentData)
         setRedditPage(1)
       }
-      if (activeTab === 'citations') fetchData('/citations', setCitationsData)
+      if (activeTab === 'citations') {
+        fetchData(`/citations?page=${citationPage}&limit=20`, setCitationsData)
+      }
       if (activeTab === 'news') fetchData('/news', setNewsData)
     }
   }, [activeTab, isAuthenticated, token])
@@ -249,7 +252,16 @@ function App() {
           <RedditTab data={redditData} sentimentData={redditSentimentData} page={redditPage} setPage={setRedditPage} />
         )}
         {!loading && activeTab === 'citations' && citationsData && (
-          <CitationsTab data={citationsData} />
+          <CitationsTab 
+            data={citationsData} 
+            token={token}
+            page={citationPage}
+            setPage={setCitationPage}
+            onPageChange={(newPage) => {
+              setCitationPage(newPage)
+              fetchData(`/citations?page=${newPage}&limit=20`, setCitationsData)
+            }}
+          />
         )}
         {!loading && activeTab === 'news' && newsData && (
           <NewsTab data={newsData} />
@@ -265,7 +277,13 @@ function OverviewTab({ data }) {
   const current_week = (data && data.current_week) ? data.current_week : {
     news_mentions: 0,
     social_mentions: 0,
-    citations: 0
+    citations: 0,
+    total_news_mentions: 0,
+    new_news_mentions_7d: 0,
+    total_social_mentions: 0,
+    new_social_mentions_7d: 0,
+    total_citations: 0,
+    new_citations_7d: 0
   }
 
   const weekly_trends = (data && data.weekly_trends) ? data.weekly_trends : []
@@ -279,156 +297,173 @@ function OverviewTab({ data }) {
     <div className="space-y-6">
       {/* Current Week Metrics */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <MetricCard
-          title="News Mentions"
-          value={current_week.news_mentions}
-          color="blue"
-        />
-        <MetricCard
-          title="Social Mentions"
-          value={current_week.social_mentions}
-          color="purple"
-        />
-        <MetricCard
-          title="Citations"
-          value={current_week.citations}
-          color="green"
-        />
-      </div>
-
-      {/* Platform Breakdown and Sentiment Summary Row */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Platform Breakdown Pie Chart */}
         <div className="bg-white p-6 rounded-lg shadow">
-          <h2 className="text-xl font-semibold mb-4">Platform Breakdown (This Week)</h2>
-          {platform_breakdown.length > 0 ? (
-            <ResponsiveContainer width="100%" height={300}>
-              <PieChart>
-                <Pie
-                  data={platform_breakdown}
-                  dataKey="mention_count"
-                  nameKey="platform"
-                  cx="50%"
-                  cy="50%"
-                  outerRadius={80}
-                  label={({ platform, mention_count }) => `${platform}: ${mention_count}`}
-                >
-                  {platform_breakdown.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                  ))}
-                </Pie>
-                <Tooltip />
-              </PieChart>
-            </ResponsiveContainer>
-          ) : (
-            <p className="text-gray-500 text-center py-8">No platform data for this week</p>
-          )}
+          <h3 className="text-sm font-medium text-gray-600 mb-2">News Mentions</h3>
+          <div className="flex items-baseline gap-3">
+            <div className="text-3xl font-bold text-blue-600">{current_week.total_news_mentions}</div>
+            <div className="text-sm text-gray-500">total</div>
+          </div>
+          <div className="mt-2 text-sm text-green-600">
+            +{current_week.new_news_mentions_7d} new (7 days)
+          </div>
         </div>
-
-        {/* Sentiment Summary */}
         <div className="bg-white p-6 rounded-lg shadow">
-          <h2 className="text-xl font-semibold mb-4">Sentiment Summary (This Week)</h2>
-          {sentiment_summary.length > 0 ? (
-            <div className="space-y-4">
-              {sentiment_summary.map((item, idx) => (
-                <div key={idx} className="border-b pb-3 last:border-b-0">
-                  <div className="font-medium text-gray-900 mb-2">{item.platform}</div>
-                  <div className="flex gap-4 text-sm">
-                    <div className="flex-1">
-                      <div className="flex justify-between mb-1">
-                        <span className="text-green-600">Positive</span>
-                        <span className="font-semibold">{Math.round(item.positive_pct)}%</span>
-                      </div>
-                      <div className="w-full bg-gray-200 rounded-full h-2">
-                        <div className="bg-green-500 h-2 rounded-full" style={{ width: `${item.positive_pct}%` }}></div>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="flex gap-4 text-sm mt-2">
-                    <div className="flex-1">
-                      <div className="flex justify-between mb-1">
-                        <span className="text-gray-600">Neutral</span>
-                        <span className="font-semibold">{Math.round(item.neutral_pct)}%</span>
-                      </div>
-                      <div className="w-full bg-gray-200 rounded-full h-2">
-                        <div className="bg-gray-400 h-2 rounded-full" style={{ width: `${item.neutral_pct}%` }}></div>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="flex gap-4 text-sm mt-2">
-                    <div className="flex-1">
-                      <div className="flex justify-between mb-1">
-                        <span className="text-red-600">Negative</span>
-                        <span className="font-semibold">{Math.round(item.negative_pct)}%</span>
-                      </div>
-                      <div className="w-full bg-gray-200 rounded-full h-2">
-                        <div className="bg-red-500 h-2 rounded-full" style={{ width: `${item.negative_pct}%` }}></div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <p className="text-gray-500 text-center py-8">No sentiment data for this week</p>
-          )}
+          <h3 className="text-sm font-medium text-gray-600 mb-2">Social Mentions</h3>
+          <div className="flex items-baseline gap-3">
+            <div className="text-3xl font-bold text-purple-600">{current_week.total_social_mentions}</div>
+            <div className="text-sm text-gray-500">total</div>
+          </div>
+          <div className="mt-2 text-sm text-green-600">
+            +{current_week.new_social_mentions_7d} new (7 days)
+          </div>
+        </div>
+        <div className="bg-white p-6 rounded-lg shadow">
+          <h3 className="text-sm font-medium text-gray-600 mb-2">Citations</h3>
+          <div className="flex items-baseline gap-3">
+            <div className="text-3xl font-bold text-green-600">{current_week.total_citations}</div>
+            <div className="text-sm text-gray-500">total</div>
+          </div>
+          <div className="mt-2 text-sm text-green-600">
+            +{current_week.new_citations_7d} new (7 days)
+          </div>
         </div>
       </div>
 
-      {/* Recent Mentions and Trending Keywords Row */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Recent Mentions */}
-        <div className="bg-white p-6 rounded-lg shadow">
-          <h2 className="text-xl font-semibold mb-4">Recent Mentions</h2>
-          {recent_mentions.length > 0 ? (
-            <div className="space-y-3 max-h-96 overflow-y-auto">
-              {recent_mentions.map((mention, idx) => (
-                <div key={idx} className="border-b pb-3 last:border-b-0">
-                  <div className="flex justify-between items-start mb-1">
-                    <span className="font-medium text-sm text-blue-600">{mention.platform}</span>
-                    <span className="text-xs text-gray-500">
-                      {new Date(mention.date).toLocaleDateString()}
-                    </span>
-                  </div>
-                  <p className="text-sm text-gray-700 mb-1">
-                    {mention.text && mention.text.length > 150 
-                      ? mention.text.substring(0, 150) + '...' 
-                      : mention.text}
-                  </p>
-                  <div className="flex justify-between items-center text-xs text-gray-500">
-                    <span>@{mention.author}</span>
-                    {mention.engagement_score && (
-                      <span className="text-purple-600">Engagement: {mention.engagement_score}</span>
-                    )}
-                  </div>
-                </div>
-              ))}
+      {/* Platform Breakdown and Sentiment Summary Row - Only show if data exists */}
+      {(platform_breakdown.length > 0 || sentiment_summary.length > 0) && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* Platform Breakdown Pie Chart */}
+          {platform_breakdown.length > 0 && (
+            <div className="bg-white p-6 rounded-lg shadow">
+              <h2 className="text-xl font-semibold mb-4">Platform Breakdown (This Week)</h2>
+              <ResponsiveContainer width="100%" height={300}>
+                <PieChart>
+                  <Pie
+                    data={platform_breakdown}
+                    dataKey="mention_count"
+                    nameKey="platform"
+                    cx="50%"
+                    cy="50%"
+                    outerRadius={80}
+                    label={({ platform, mention_count }) => `${platform}: ${mention_count}`}
+                  >
+                    {platform_breakdown.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                    ))}
+                  </Pie>
+                  <Tooltip />
+                </PieChart>
+              </ResponsiveContainer>
             </div>
-          ) : (
-            <p className="text-gray-500 text-center py-8">No recent mentions</p>
           )}
-        </div>
 
-        {/* Trending Keywords */}
-        <div className="bg-white p-6 rounded-lg shadow">
-          <h2 className="text-xl font-semibold mb-4">Trending Keywords (This Week)</h2>
-          {trending_keywords.length > 0 ? (
-            <div className="flex flex-wrap gap-2">
-              {trending_keywords.map((keyword, idx) => (
-                <span
-                  key={idx}
-                  className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-blue-100 text-blue-800"
-                >
-                  {keyword.word}
-                  <span className="ml-2 text-xs text-blue-600">({keyword.frequency})</span>
-                </span>
-              ))}
+          {/* Sentiment Summary */}
+          {sentiment_summary.length > 0 && (
+            <div className="bg-white p-6 rounded-lg shadow">
+              <h2 className="text-xl font-semibold mb-4">Sentiment Summary (This Week)</h2>
+              <div className="space-y-4">
+                {sentiment_summary.map((item, idx) => (
+                  <div key={idx} className="border-b pb-3 last:border-b-0">
+                    <div className="font-medium text-gray-900 mb-2">{item.platform}</div>
+                    <div className="flex gap-4 text-sm">
+                      <div className="flex-1">
+                        <div className="flex justify-between mb-1">
+                          <span className="text-green-600">Positive</span>
+                          <span className="font-semibold">{Math.round(item.positive_pct)}%</span>
+                        </div>
+                        <div className="w-full bg-gray-200 rounded-full h-2">
+                          <div className="bg-green-500 h-2 rounded-full" style={{ width: `${item.positive_pct}%` }}></div>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex gap-4 text-sm mt-2">
+                      <div className="flex-1">
+                        <div className="flex justify-between mb-1">
+                          <span className="text-gray-600">Neutral</span>
+                          <span className="font-semibold">{Math.round(item.neutral_pct)}%</span>
+                        </div>
+                        <div className="w-full bg-gray-200 rounded-full h-2">
+                          <div className="bg-gray-400 h-2 rounded-full" style={{ width: `${item.neutral_pct}%` }}></div>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex gap-4 text-sm mt-2">
+                      <div className="flex-1">
+                        <div className="flex justify-between mb-1">
+                          <span className="text-red-600">Negative</span>
+                          <span className="font-semibold">{Math.round(item.negative_pct)}%</span>
+                        </div>
+                        <div className="w-full bg-gray-200 rounded-full h-2">
+                          <div className="bg-red-500 h-2 rounded-full" style={{ width: `${item.negative_pct}%` }}></div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
-          ) : (
-            <p className="text-gray-500 text-center py-8">No trending keywords</p>
           )}
         </div>
-      </div>
+      )}
+
+      {/* Recent Mentions - Full Width */}
+      {recent_mentions.length > 0 && (
+        <div className="bg-white p-6 rounded-lg shadow">
+              <h2 className="text-xl font-semibold mb-4">Recent Mentions</h2>
+              <div className="space-y-3 max-h-96 overflow-y-auto">
+                {recent_mentions.map((mention, idx) => (
+                  <div key={idx} className="border-b pb-3 last:border-b-0">
+                    <div className="flex justify-between items-start mb-1">
+                      <span className="font-medium text-sm text-blue-600">{mention.platform}</span>
+                      <span className="text-xs text-gray-500">
+                        {new Date(mention.date).toLocaleDateString()}
+                      </span>
+                    </div>
+                    <p className="text-sm text-gray-700 mb-1">
+                      {mention.text && mention.text.length > 150 
+                        ? mention.text.substring(0, 150) + '...' 
+                        : mention.text}
+                    </p>
+                    <div className="flex justify-between items-center text-xs text-gray-500">
+                      <span>@{mention.author}</span>
+                      <div className="flex items-center gap-3">
+                        {mention.engagement_score && (
+                          <span className="text-purple-600">Engagement: {mention.engagement_score}</span>
+                        )}
+                        {mention.url && mention.platform === 'Twitter' && (
+                          <a 
+                            href={mention.url} 
+                            target="_blank" 
+                            rel="noopener noreferrer"
+                            className="text-blue-600 hover:text-blue-800 font-medium"
+                          >
+                            View Post →
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+        </div>
+      )}
+
+      {/* Trending Keywords - Only show if data exists */}
+      {trending_keywords.length > 0 && (
+        <div className="bg-white p-6 rounded-lg shadow">\n              <h2 className="text-xl font-semibold mb-4">Trending Keywords (This Week)</h2>
+              <div className="flex flex-wrap gap-2">
+                {trending_keywords.map((keyword, idx) => (
+                  <span
+                    key={idx}
+                    className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-blue-100 text-blue-800"
+                  >
+                    {keyword.word}
+                    <span className="ml-2 text-xs text-blue-600">({keyword.frequency})</span>
+                  </span>
+                ))}
+              </div>
+        </div>
+      )}
 
       {/* Top Subreddits */}
       <div className="bg-white p-6 rounded-lg shadow">
@@ -439,7 +474,10 @@ function OverviewTab({ data }) {
               <div key={idx} className="border rounded-lg p-3 hover:bg-gray-50">
                 <div className="font-medium text-blue-600">r/{subreddit.subreddit_name}</div>
                 <div className="text-xs text-gray-500 mt-1">
-                  {new Date(subreddit.discovered_at).toLocaleDateString()}
+                  Discovered: {new Date(subreddit.discovered_at).toLocaleDateString()}
+                </div>
+                <div className="text-xs font-semibold text-gray-700 mt-1">
+                  {subreddit.total_posts || 0} posts
                 </div>
               </div>
             ))}
@@ -449,25 +487,27 @@ function OverviewTab({ data }) {
         )}
       </div>
 
-      {/* Weekly Trends Chart with Logarithmic Scale */}
-      <div className="bg-white p-6 rounded-lg shadow">
-        <h2 className="text-xl font-semibold mb-4">12-Week Trends (Logarithmic Scale)</h2>
-        <ResponsiveContainer width="100%" height={400}>
-          <LineChart data={weekly_trends.sort((a, b) => new Date(a.week_start_date) - new Date(b.week_start_date))}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis
-              dataKey="week_start_date"
-              tickFormatter={(date) => new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-            />
-            <YAxis scale="log" domain={['auto', 'auto']} />
-            <Tooltip />
-            <Legend />
-            <Line type="monotone" dataKey="total_news_mentions" stroke="#3b82f6" name="News" />
-            <Line type="monotone" dataKey="total_social_mentions" stroke="#8b5cf6" name="Social" />
-            <Line type="monotone" dataKey="total_citations" stroke="#10b981" name="Citations" />
-          </LineChart>
-        </ResponsiveContainer>
-      </div>
+      {/* Weekly Trends Chart - Only show if data exists */}
+      {weekly_trends.length > 0 && (
+        <div className="bg-white p-6 rounded-lg shadow">
+          <h2 className="text-xl font-semibold mb-4">12-Week Trends</h2>
+          <ResponsiveContainer width="100%" height={400}>
+            <LineChart data={weekly_trends.sort((a, b) => new Date(a.week_start_date) - new Date(b.week_start_date))}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis
+                dataKey="week_start_date"
+                tickFormatter={(date) => new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+              />
+              <YAxis />
+              <Tooltip />
+              <Legend />
+              <Line type="monotone" dataKey="total_news_mentions" stroke="#3b82f6" name="News" strokeWidth={2} />
+              <Line type="monotone" dataKey="total_social_mentions" stroke="#8b5cf6" name="Social" strokeWidth={2} />
+              <Line type="monotone" dataKey="total_citations" stroke="#10b981" name="Citations" strokeWidth={2} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      )}
     </div>
   )
 }
@@ -1082,8 +1122,27 @@ function RedditTab({ data, sentimentData, page, setPage }) {
 }
 
 // Citations Tab Component
-function CitationsTab({ data }) {
-  const { weekly_metrics, top_works, recent_citations } = data
+function CitationsTab({ data, token, page, onPageChange }) {
+  const { weekly_metrics, top_works, recent_citations, pagination } = data
+
+  const handleDownload = async () => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/citations/download`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      const blob = await response.blob()
+      const url = window.URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `citations_${new Date().toISOString().split('T')[0]}.csv`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      window.URL.revokeObjectURL(url)
+    } catch (error) {
+      console.error('Download error:', error)
+    }
+  }
 
   // Icon components for citation types
   const OrganizationIcon = () => (
@@ -1106,19 +1165,30 @@ function CitationsTab({ data }) {
 
   return (
     <div className="space-y-6">
-      {/* Citation Type Legend */}
-      <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-        <h3 className="text-sm font-semibold text-blue-900 mb-2">Citation Types:</h3>
-        <div className="flex gap-6 text-sm text-blue-800">
-          <div className="flex items-center">
-            <OrganizationIcon />
-            <span>Organization/Institution (ummatics.org)</span>
-          </div>
-          <div className="flex items-center">
-            <WordIcon />
-            <span>Word/Concept Usage (ummatic)</span>
+      {/* Citation Type Legend and Download Button */}
+      <div className="flex justify-between items-center">
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 flex-1">
+          <h3 className="text-sm font-semibold text-blue-900 mb-2">Citation Types:</h3>
+          <div className="flex gap-6 text-sm text-blue-800">
+            <div className="flex items-center">
+              <OrganizationIcon />
+              <span>Organization/Institution (ummatics.org)</span>
+            </div>
+            <div className="flex items-center">
+              <WordIcon />
+              <span>Word/Concept Usage (ummatic)</span>
+            </div>
           </div>
         </div>
+        <button
+          onClick={handleDownload}
+          className="ml-4 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 flex items-center gap-2"
+        >
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+          </svg>
+          Download CSV
+        </button>
       </div>
 
       {/* Citation Trends */}
@@ -1131,18 +1201,26 @@ function CitationsTab({ data }) {
               dataKey="week_start_date"
               tickFormatter={(date) => new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
             />
-            <YAxis />
+            <YAxis yAxisId="left" label={{ value: 'Total Citations', angle: -90, position: 'insideLeft' }} />
+            <YAxis yAxisId="right" orientation="right" label={{ value: 'New This Week', angle: 90, position: 'insideRight' }} />
             <Tooltip />
             <Legend />
-            <Line type="monotone" dataKey="total_citations" stroke="#3b82f6" name="Total Citations" />
-            <Line type="monotone" dataKey="new_citations_this_week" stroke="#10b981" name="New This Week" />
+            <Line yAxisId="left" type="monotone" dataKey="total_citations" stroke="#3b82f6" name="Total Citations" strokeWidth={2} />
+            <Line yAxisId="right" type="monotone" dataKey="new_citations_this_week" stroke="#10b981" name="New This Week" strokeWidth={2} />
           </LineChart>
         </ResponsiveContainer>
       </div>
 
-      {/* Top Cited Works */}
+      {/* Top Cited Works with Pagination */}
       <div className="bg-white p-6 rounded-lg shadow">
-        <h2 className="text-xl font-semibold mb-4">Recently Mentioned Works</h2>
+        <div className="flex justify-between items-center mb-4">
+          <h2 className="text-xl font-semibold">All Citations ({pagination?.total || 0})</h2>
+          {pagination && pagination.total_pages > 1 && (
+            <div className="text-sm text-gray-600">
+              Page {pagination.page} of {pagination.total_pages}
+            </div>
+          )}
+        </div>
         <div className="overflow-x-auto">
           <table className="min-w-full divide-y divide-gray-200">
             <thead className="bg-gray-50">
@@ -1155,7 +1233,7 @@ function CitationsTab({ data }) {
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
-              {top_works.slice(0, 10).map((work, idx) => (
+              {top_works.map((work, idx) => (
                 <tr key={idx}>
                   <td className="px-6 py-4 text-sm text-gray-900">
                     <div className="flex items-start">
@@ -1163,6 +1241,10 @@ function CitationsTab({ data }) {
                       <div className="flex-1">
                         {work.doi ? (
                           <a href={`https://doi.org/${work.doi}`} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
+                            {work.title}
+                          </a>
+                        ) : work.source_url ? (
+                          <a href={work.source_url} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
                             {work.title}
                           </a>
                         ) : work.title}
@@ -1186,6 +1268,51 @@ function CitationsTab({ data }) {
             </tbody>
           </table>
         </div>
+        
+        {/* Pagination Controls */}
+        {pagination && pagination.total_pages > 1 && (
+          <div className="mt-4 flex justify-center gap-2">
+            <button
+              onClick={() => onPageChange(pagination.page - 1)}
+              disabled={pagination.page === 1}
+              className="px-4 py-2 border rounded disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-50"
+            >
+              Previous
+            </button>
+            {Array.from({ length: Math.min(pagination.total_pages, 7) }, (_, i) => {
+              let pageNum
+              if (pagination.total_pages <= 7) {
+                pageNum = i + 1
+              } else if (pagination.page <= 4) {
+                pageNum = i + 1
+              } else if (pagination.page >= pagination.total_pages - 3) {
+                pageNum = pagination.total_pages - 6 + i
+              } else {
+                pageNum = pagination.page - 3 + i
+              }
+              return (
+                <button
+                  key={pageNum}
+                  onClick={() => onPageChange(pageNum)}
+                  className={`px-4 py-2 border rounded ${
+                    pagination.page === pageNum
+                      ? 'bg-blue-600 text-white'
+                      : 'hover:bg-gray-50'
+                  }`}
+                >
+                  {pageNum}
+                </button>
+              )
+            })}
+            <button
+              onClick={() => onPageChange(pagination.page + 1)}
+              disabled={pagination.page === pagination.total_pages}
+              className="px-4 py-2 border rounded disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-50"
+            >
+              Next
+            </button>
+          </div>
+        )}
       </div>
     </div>
   )
@@ -1227,7 +1354,7 @@ function NewsTab({ data }) {
                       {mention.title}
                     </a>
                   </h3>
-                  <p className="text-sm text-gray-600 mb-2">{mention.snippet}</p>
+                  <p className="text-sm text-gray-600 mb-2" dangerouslySetInnerHTML={{ __html: mention.snippet || '' }}></p>
                   <div className="flex gap-4 text-xs text-gray-500">
                     <span>Source: {mention.source}</span>
                     <span>

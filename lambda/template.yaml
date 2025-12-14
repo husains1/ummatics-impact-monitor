@@ -1,0 +1,59 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Serverless sentiment analysis using DistilBERT transformer in Lambda
+
+Resources:
+  # IAM Role for Lambda
+  SentimentAnalysisRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  # Lambda Function (Container image with transformer)
+  SentimentAnalysisFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: ummatics-sentiment-analysis
+      PackageType: Image
+      ImageUri: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/ummatics-sentiment:latest'
+      MemorySize: 2048  # 2GB needed for transformer model
+      Timeout: 60       # Allow time for cold starts
+      EphemeralStorage:
+        Size: 1024      # 1GB temp storage for model cache
+      Role: !GetAtt SentimentAnalysisRole.Arn
+      
+  # Lambda Function URL (for easy invocation without API Gateway)
+  SentimentFunctionUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      AuthType: AWS_IAM
+      TargetFunctionArn: !GetAtt SentimentAnalysisFunction.Arn
+
+  SentimentFunctionUrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref SentimentAnalysisFunction
+      Action: lambda:InvokeFunctionUrl
+      Principal: '*'
+      FunctionUrlAuthType: AWS_IAM
+
+Outputs:
+  FunctionName:
+    Description: Lambda Function Name
+    Value: !Ref SentimentAnalysisFunction
+    
+  FunctionArn:
+    Description: Lambda Function ARN
+    Value: !GetAtt SentimentAnalysisFunction.Arn
+    
+  FunctionUrl:
+    Description: Lambda Function URL
+    Value: !GetAtt SentimentFunctionUrl.FunctionUrl

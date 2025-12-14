@@ -8,6 +8,8 @@ from functools import wraps
 from datetime import datetime, timedelta, date
 from decimal import Decimal
 import logging
+import csv
+import io
 import json
 
 # Configure logging
@@ -99,21 +101,84 @@ def get_overview():
         conn = get_db_connection()
         cur = conn.cursor(cursor_factory=RealDictCursor)
         
-        # Get last 12 weeks of data
+        # Get last 12 weeks of data and calculate weekly deltas
         cur.execute("""
+            WITH weekly_ordered AS (
+                SELECT 
+                    week_start_date,
+                    total_news_mentions,
+                    total_social_mentions,
+                    total_citations,
+                    LAG(total_news_mentions, 1, 0) OVER (ORDER BY week_start_date) as prev_news,
+                    LAG(total_social_mentions, 1, 0) OVER (ORDER BY week_start_date) as prev_social,
+                    LAG(total_citations, 1, 0) OVER (ORDER BY week_start_date) as prev_citations
+                FROM weekly_snapshots
+                ORDER BY week_start_date
+            )
             SELECT 
                 week_start_date,
-                total_news_mentions,
-                total_social_mentions,
-                total_citations
-            FROM weekly_snapshots
+                GREATEST(0, total_news_mentions - prev_news) as total_news_mentions,
+                GREATEST(0, total_social_mentions - prev_social) as total_social_mentions,
+                GREATEST(0, total_citations - prev_citations) as total_citations
+            FROM weekly_ordered
             ORDER BY week_start_date DESC
             LIMIT 12
         """)
         weekly_data = cur.fetchall()
         
-        # Get current week totals
+        # Get current week totals and calculate 7-day new counts
         monday, sunday = get_current_week_dates()
+        
+        # Get total counts across all time
+        cur.execute("""
+            SELECT 
+                COUNT(*) as total_news_mentions
+            FROM news_mentions
+        """)
+        total_news = cur.fetchone()['total_news_mentions'] or 0
+        
+        cur.execute("""
+            SELECT 
+                COUNT(*) as total_social_mentions
+            FROM social_mentions
+        """)
+        total_social = cur.fetchone()['total_social_mentions'] or 0
+        
+        cur.execute("""
+            SELECT 
+                COUNT(*) as total_citations
+            FROM citations
+            WHERE is_dead = FALSE
+        """)
+        total_citations = cur.fetchone()['total_citations'] or 0
+        
+        # Get counts from past 7 days
+        cur.execute("""
+            SELECT 
+                COUNT(*) as new_news_mentions
+            FROM news_mentions
+            WHERE created_at >= NOW() - INTERVAL '7 days'
+        """)
+        new_news = cur.fetchone()['new_news_mentions'] or 0
+        
+        cur.execute("""
+            SELECT 
+                COUNT(*) as new_social_mentions
+            FROM social_mentions
+            WHERE posted_at >= NOW() - INTERVAL '7 days'
+        """)
+        new_social = cur.fetchone()['new_social_mentions'] or 0
+        
+        cur.execute("""
+            SELECT 
+                COUNT(*) as new_citations
+            FROM citations
+            WHERE is_dead = FALSE
+                AND updated_at >= NOW() - INTERVAL '7 days'
+        """)
+        new_citations = cur.fetchone()['new_citations'] or 0
+        
+        # Get current week snapshot data (for backwards compatibility)
         cur.execute("""
             SELECT 
                 COALESCE(total_news_mentions, 0) as news_mentions,
@@ -131,7 +196,15 @@ def get_overview():
                 'citations': 0
             }
         
-        # Get recent mentions (last 10 from all platforms)
+        # Add total and 7-day counts to current_week response
+        current_week['total_news_mentions'] = total_news
+        current_week['new_news_mentions_7d'] = new_news
+        current_week['total_social_mentions'] = total_social
+        current_week['new_social_mentions_7d'] = new_social
+        current_week['total_citations'] = total_citations
+        current_week['new_citations_7d'] = new_citations
+        
+        # Get recent mentions (last 10 from all platforms) with URL for Twitter
         cur.execute("""
             SELECT 
                 TO_CHAR(posted_at, 'YYYY-MM-DD')::TEXT as date,
@@ -172,15 +245,19 @@ def get_overview():
         """, (monday,))
         sentiment_summary = cur.fetchall()
         
-        # Get top discovered subreddits
+        # Get top discovered subreddits with post counts
         cur.execute("""
             SELECT 
-                subreddit_name,
-                TO_CHAR(discovered_at, 'YYYY-MM-DD')::TEXT as discovered_at,
-                is_active
-            FROM discovered_subreddits
-            WHERE is_active = true
-            ORDER BY discovered_at DESC
+                ds.subreddit_name,
+                TO_CHAR(ds.discovered_at, 'YYYY-MM-DD')::TEXT as discovered_at,
+                ds.is_active,
+                COUNT(sm.id) as total_posts
+            FROM discovered_subreddits ds
+            LEFT JOIN social_mentions sm ON sm.platform = 'Reddit' 
+                AND LOWER(sm.content) LIKE '%' || LOWER(ds.subreddit_name) || '%'
+            WHERE ds.is_active = true
+            GROUP BY ds.subreddit_name, ds.discovered_at, ds.is_active
+            ORDER BY ds.discovered_at DESC
             LIMIT 10
         """)
         top_subreddits = cur.fetchall()
@@ -207,7 +284,7 @@ def get_overview():
         conn.close()
         
         return jsonify({
-            'current_week': current_week,
+            'current_week': dict(current_week) if current_week else {},
             'weekly_trends': [dict(row) for row in weekly_data],
             'recent_mentions': [dict(row) for row in recent_mentions],
             'platform_breakdown': [dict(row) for row in platform_breakdown],
@@ -466,10 +543,19 @@ def get_website():
 @app.route('/api/citations', methods=['GET'])
 @require_auth
 def get_citations():
-    """Get academic citation data"""
+    """Get academic citation data with pagination"""
     try:
+        # Get pagination parameters
+        page = int(request.args.get('page', 1))
+        limit = min(int(request.args.get('limit', 20)), 100)  # Max 100 per page
+        offset = (page - 1) * limit
+        
         conn = get_db_connection()
         cur = conn.cursor(cursor_factory=RealDictCursor)
+        
+        # Get total count
+        cur.execute("SELECT COUNT(*) as total FROM citations WHERE is_dead = FALSE")
+        total_count = cur.fetchone()['total']
         
         # Get weekly citation metrics
         cur.execute("""
@@ -484,7 +570,7 @@ def get_citations():
         """)
         weekly_metrics = cur.fetchall()
         
-        # Get top cited works (sorted by most recent publication date)
+        # Get top cited works (sorted by most recent publication date) with pagination
         cur.execute("""
             SELECT 
                 title,
@@ -498,8 +584,8 @@ def get_citations():
             FROM citations
             WHERE is_dead = FALSE
             ORDER BY publication_date DESC NULLS LAST
-            LIMIT 20
-        """)
+            LIMIT %s OFFSET %s
+        """, (limit, offset))
         top_works = cur.fetchall()
         
         # Get recent citations (sorted by publication date, not update time)
@@ -526,11 +612,78 @@ def get_citations():
         return jsonify({
             'weekly_metrics': [dict(row) for row in weekly_metrics],
             'top_works': [dict(row) for row in top_works],
-            'recent_citations': [dict(row) for row in recent_citations]
+            'recent_citations': [dict(row) for row in recent_citations],
+            'pagination': {
+                'page': page,
+                'limit': limit,
+                'total': total_count,
+                'total_pages': (total_count + limit - 1) // limit
+            }
         })
         
     except Exception as e:
         logger.error(f"Error fetching citation data: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/citations/download', methods=['GET'])
+@require_auth
+def download_citations():
+    """Download all citations as CSV"""
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        
+        # Get all citations
+        cur.execute("""
+            SELECT 
+                title,
+                authors,
+                publication_date,
+                cited_by_count,
+                doi,
+                source_url,
+                citation_type,
+                updated_at
+            FROM citations
+            WHERE is_dead = FALSE
+            ORDER BY publication_date DESC NULLS LAST
+        """)
+        citations = cur.fetchall()
+        
+        cur.close()
+        conn.close()
+        
+        # Create CSV in memory
+        output = io.StringIO()
+        writer = csv.writer(output)
+        
+        # Write header
+        writer.writerow(['Title', 'Authors', 'Publication Date', 'Citations', 'DOI', 'Source URL', 'Citation Type', 'Last Updated'])
+        
+        # Write data
+        for citation in citations:
+            writer.writerow([
+                citation['title'],
+                citation['authors'],
+                citation['publication_date'].isoformat() if citation['publication_date'] else '',
+                citation['cited_by_count'],
+                citation['doi'] or '',
+                citation['source_url'],
+                citation['citation_type'],
+                citation['updated_at'].isoformat() if citation['updated_at'] else ''
+            ])
+        
+        # Prepare response
+        output.seek(0)
+        return Response(
+            output.getvalue(),
+            mimetype='text/csv',
+            headers={'Content-Disposition': f'attachment; filename=citations_{datetime.now().strftime("%Y%m%d")}.csv'}
+        )
+        
+    except Exception as e:
+        logger.error(f"Error downloading citations: {e}")
         return jsonify({'error': str(e)}), 500
 
 

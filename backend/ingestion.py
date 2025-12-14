@@ -61,21 +61,27 @@ def get_current_week_dates():
 
 
 def analyze_sentiment(text):
-    """Wrapper that uses transformer classifier when enabled via env var, otherwise TextBlob.
+    """Analyze sentiment using AWS Lambda transformer or TextBlob fallback.
+    
     Returns: (sentiment_label, sentiment_score)
     - sentiment_label: 'positive', 'negative', or 'neutral'
     - sentiment_score: model confidence or polarity (rounded)
     """
     try:
-        use_transformer = os.getenv('USE_TRANSFORMER', '0') in ('1', 'true', 'True')
-        if use_transformer:
-            # lazy import to avoid hard dependency when not in use
+        # Check if Lambda sentiment is enabled
+        use_lambda = os.getenv('USE_LAMBDA_SENTIMENT', '0') in ('1', 'true', 'True')
+        
+        if use_lambda:
             try:
-                from transformer_sentiment import analyze_sentiment_transformer
-                return analyze_sentiment_transformer(text)
+                from lambda_sentiment import analyze_sentiment_lambda
+                results = analyze_sentiment_lambda([text])
+                if results:
+                    return results[0]  # Returns (sentiment, score)
+                logger.warning("Lambda returned empty results, falling back to TextBlob")
             except Exception as e:
-                logger.warning(f"Transformer unavailable, falling back to TextBlob: {e}")
-
+                logger.warning(f"Lambda sentiment unavailable, falling back to TextBlob: {e}")
+        
+        # Fallback to TextBlob (fast, lightweight)
         if not text:
             return 'neutral', 0.0
 
@@ -229,6 +235,200 @@ def ingest_google_alerts():
         
     except Exception as e:
         logger.error(f"Error in Google Alerts ingestion: {e}")
+
+
+def google_search_reddit_posts():
+    """
+    Use Google Custom Search API to find Reddit posts mentioning 'ummatics' or 'ummatic'.
+    This catches posts that Reddit RSS misses, including posts where the keywords
+    appear in comments rather than the post title/content.
+    
+    OPTIONAL: Requires GOOGLE_API_KEY and GOOGLE_CSE_ID environment variables.
+    If not configured, gracefully skips without errors.
+    
+    Setup instructions in GOOGLE_CSE_SETUP.md
+    
+    Returns:
+        int: Number of new posts ingested
+    """
+    logger.info("Checking for Google Custom Search configuration...")
+    
+    api_key = os.getenv('GOOGLE_API_KEY')
+    cse_id = os.getenv('GOOGLE_CSE_ID')
+    
+    if not api_key or not cse_id:
+        logger.info("Google Custom Search not configured (optional feature)")
+        logger.info("To enable comment-level Reddit discovery, see GOOGLE_CSE_SETUP.md")
+        logger.info("Continuing with RSS-only Reddit ingestion...")
+        return 0
+    
+    logger.info("Google Custom Search configured - searching for Reddit posts...")
+    
+    ingested_count = 0
+    
+    try:
+        # Google Custom Search API endpoint
+        base_url = "https://www.googleapis.com/customsearch/v1"
+        
+        # Search for Reddit posts (up to 100 results via pagination)
+        query = 'site:reddit.com ("ummatics" OR "ummatic")'
+        post_urls = set()
+        
+        # Google CSE allows max 10 results per request, max 100 total
+        for start_index in [1, 11, 21, 31, 41, 51, 61, 71, 81, 91]:
+            params = {
+                'key': api_key,
+                'cx': cse_id,
+                'q': query,
+                'start': start_index,
+                'num': 10
+            }
+            
+            logger.info(f"Fetching Google CSE results (start={start_index})...")
+            response = requests.get(base_url, params=params, timeout=30)
+            
+            if response.status_code != 200:
+                logger.error(f"Google CSE request failed: {response.status_code} - {response.text[:200]}")
+                break
+            
+            data = response.json()
+            
+            # Check if we have results
+            if 'items' not in data:
+                logger.info(f"No more results at start_index={start_index}")
+                break
+            
+            # Extract Reddit post URLs
+            for item in data['items']:
+                url = item.get('link', '')
+                
+                # Check if it's a Reddit post URL (not just subreddit page)
+                if 'reddit.com/r/' in url and '/comments/' in url:
+                    # Clean URL (remove query params)
+                    clean_url = url.split('?')[0].rstrip('/')
+                    post_urls.add(clean_url)
+                    logger.debug(f"Found Reddit post via Google CSE: {clean_url}")
+            
+            # Respect rate limits
+            time.sleep(0.5)
+        
+        logger.info(f"Found {len(post_urls)} unique Reddit posts via Google Custom Search")
+        
+        if len(post_urls) == 0:
+            logger.info("No new Reddit posts found via Google Custom Search")
+            return 0
+        
+        # Connect to database
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        # Process each post URL
+        for post_url in post_urls:
+            try:
+                # Check if we already have this post
+                cur.execute("""
+                    SELECT id FROM social_mentions 
+                    WHERE post_url = %s AND platform = 'Reddit'
+                """, (post_url,))
+                
+                if cur.fetchone():
+                    logger.debug(f"Post already in database: {post_url}")
+                    continue
+                
+                # Fetch post data from Reddit JSON API
+                json_url = f"{post_url}.json"
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                }
+                response = requests.get(json_url, headers=headers, timeout=15)
+                
+                if response.status_code != 200:
+                    logger.warning(f"Failed to fetch post data: {post_url} (status: {response.status_code})")
+                    continue
+                
+                data = response.json()
+                
+                # Extract post data
+                post_data = data[0]['data']['children'][0]['data']
+                title = post_data.get('title', '')
+                selftext = post_data.get('selftext', '')
+                author = post_data.get('author', 'unknown')
+                subreddit = post_data.get('subreddit', '')
+                created_utc = post_data.get('created_utc', 0)
+                score = post_data.get('score', 0)
+                num_comments = post_data.get('num_comments', 0)
+                
+                # Combine title and selftext for content
+                content = f"{title}\n\n{selftext}".strip()
+                
+                # Convert timestamp to datetime
+                from datetime import datetime
+                posted_at = datetime.fromtimestamp(created_utc)
+                
+                # Check if post or comments contain keywords
+                contains_keyword = False
+                keyword_location = ""
+                
+                if 'ummatics' in title.lower() or 'ummatic' in title.lower():
+                    contains_keyword = True
+                    keyword_location = "title"
+                elif 'ummatics' in selftext.lower() or 'ummatic' in selftext.lower():
+                    contains_keyword = True
+                    keyword_location = "content"
+                else:
+                    # Check comments
+                    if len(data) > 1:
+                        comments = data[1]['data']['children']
+                        for comment in comments:
+                            if comment['kind'] == 't1':  # Comment type
+                                comment_body = comment['data'].get('body', '')
+                                if 'ummatics' in comment_body.lower() or 'ummatic' in comment_body.lower():
+                                    contains_keyword = True
+                                    keyword_location = "comments"
+                                    # Add note about comment mention
+                                    content += f"\n\n[Note: Keyword found in comments, not post content]"
+                                    break
+                
+                if not contains_keyword:
+                    logger.debug(f"Post doesn't contain keywords (false positive): {post_url}")
+                    continue
+                
+                # Calculate engagement rate
+                engagement_rate = (score + num_comments) / max(1, score) if score > 0 else 0
+                
+                # Insert into database
+                cur.execute("""
+                    INSERT INTO social_mentions 
+                    (platform, content, post_url, posted_at, author, subreddit, 
+                     upvotes, comment_count, engagement_rate, source)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (post_url) DO NOTHING
+                """, (
+                    'Reddit', content[:5000], post_url, posted_at, author, subreddit,
+                    score, num_comments, engagement_rate, 'Google Search'
+                ))
+                
+                if cur.rowcount > 0:
+                    ingested_count += 1
+                    logger.info(f"✓ Ingested from Google ({keyword_location}): r/{subreddit} - {title[:60]}...")
+                
+                # Rate limit for Reddit API
+                time.sleep(0.5)
+                
+            except Exception as e:
+                logger.error(f"Error processing post {post_url}: {e}")
+                continue
+        
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        logger.info(f"Google Reddit post ingestion complete. New posts: {ingested_count}/{len(post_urls)}")
+        return ingested_count
+        
+    except Exception as e:
+        logger.error(f"Error in Google Reddit post search: {e}")
+        return 0
 
 
 def google_search_subreddits():
@@ -848,6 +1048,11 @@ def ingest_twitter(max_tweets=100, days_back=None):
                 content = tweet.get('text', '')
                 post_url = tweet.get('url', f"https://twitter.com/{author_username}/status/{tweet_id}")
                 
+                # Skip retweets - original posts already show retweet counts
+                if content.startswith('RT @'):
+                    logger.debug(f"Skipping retweet: {tweet_id}")
+                    continue
+                
                 # Parse created date - handle multiple formats
                 created_at = tweet.get('createdAt', '')
                 if created_at:
@@ -1322,6 +1527,9 @@ def run_full_ingestion():
             update_reddit_rss_urls(new_subreddits)
             # Note: New subreddits will be used in next run after container restart
 
+        # Use Google to find Reddit posts (catches posts with keywords in comments)
+        google_search_reddit_posts()
+        
         ingest_google_alerts()
         ingest_reddit()
         ingest_twitter()

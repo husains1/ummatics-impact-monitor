@@ -1,0 +1,3 @@
+# Requirements for Transformer-based Lambda (heavier, use container)
+transformers>=4.35.0
+torch>=2.0.0
