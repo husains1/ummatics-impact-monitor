@@ -16,6 +16,58 @@
 - Frontend serves the dashboard on port 3000
 - Backend API on port 5000 is for the frontend to call, not for direct user access
 
+**CRITICAL: Always verify the website BEFORE reporting completion:**
+- Open http://3.226.110.16:3000 in a browser
+- Check that the overview section shows data (NOT blank/zeros)
+- Verify all sections load correctly (social, citations, news)
+- Test basic navigation and functionality
+- If anything is broken, investigate and fix BEFORE reporting success
+
+---
+
+## Docker Network Issues After Container Recreation (Dec 16, 2025)
+
+### Problem: 502 Bad Gateway After Deploying Backend Changes
+
+**Issue**: After pulling new backend image and recreating API container, the website showed blank overview section and API returned 502 errors.
+
+**Symptoms**:
+- `curl http://3.226.110.16:3000/api/auth` returned 502 Bad Gateway
+- Frontend could reach API via `docker exec` and `wget http://api:5000/api/health`
+- API was running and healthy inside its own container
+- nginx showed "502 Bad Gateway" when proxying to backend
+
+**Root Cause**:
+- When containers are recreated (via `docker compose up -d`), Docker may not properly update DNS resolution in already-running containers
+- The frontend nginx was still trying to reach the OLD API container IP
+- Even though both containers were on the same Docker network, nginx had stale DNS cache
+
+**Solution**: Restart both frontend and API containers together
+```bash
+ssh -i ~/.ssh/ummatics-monitor-key.pem ubuntu@3.226.110.16 "cd /home/ubuntu/ummatics-impact-monitor && docker compose restart api frontend"
+```
+
+**Why This Works**:
+- Restarting both containers forces fresh DNS resolution
+- nginx re-resolves the `api` hostname to the correct container IP
+- Both containers rejoin the Docker network cleanly
+
+**Prevention**:
+When deploying backend changes via ECR:
+```bash
+# After docker compose pull api scheduler
+# Don't just restart api - restart frontend too
+docker compose restart api scheduler frontend
+```
+
+**Key Learnings**:
+- ✅ Docker network DNS can become stale after container recreation
+- ✅ Always restart BOTH frontend and backend when updating backend
+- ✅ Test the actual website (3.226.110.16:3000) not just container internals
+- ✅ 502 from nginx often means DNS/network issue, not application error
+- ❌ DON'T assume "docker compose up -d" handles network updates correctly
+- ❌ DON'T report deployment success without testing the public URL
+
 ---
 
 ## Twitter Retweet Handling (Dec 14, 2025)
