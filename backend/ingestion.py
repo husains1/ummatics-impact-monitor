@@ -815,7 +815,7 @@ def ingest_twitter(max_tweets=100, days_back=None):
         monday, sunday = get_current_week_dates()
         today = datetime.now().date()
 
-        # Get existing tweet IDs from database to avoid duplicates
+        # Get existing tweet IDs AND max tweet ID + date from database to avoid duplicates
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute("""
@@ -823,7 +823,22 @@ def ingest_twitter(max_tweets=100, days_back=None):
             WHERE platform = 'Twitter'
         """)
         existing_tweet_ids = set(row[0] for row in cur.fetchall())
+        
+        # Get the most recent tweet ID AND its created_at date for 7-day window iteration
+        cur.execute("""
+            SELECT post_id, created_at 
+            FROM social_mentions 
+            WHERE platform = 'Twitter' 
+            ORDER BY created_at DESC 
+            LIMIT 1
+        """)
+        last_tweet = cur.fetchone()
+        since_id = last_tweet[0] if last_tweet else None
+        last_tweet_date = last_tweet[1] if last_tweet else None
+        
         logger.info(f"Found {len(existing_tweet_ids)} existing tweets in database")
+        if since_id and last_tweet_date:
+            logger.info(f"Last tweet: ID={since_id}, date={last_tweet_date}")
         cur.close()
         conn.close()
 
@@ -835,28 +850,96 @@ def ingest_twitter(max_tweets=100, days_back=None):
             search_url = "https://api.twitter.com/2/tweets/search/recent"
             headers = {"Authorization": f"Bearer {TWITTER_BEARER_TOKEN}"}
             
+            # Build efficient query: filter at API level to minimize quota usage
+            # -is:retweet excludes retweets BEFORE counting against quota
+            # -from:ummatics excludes our own posts
             params = {
-                "query": "(Ummatics OR ummatics OR Ummatic OR ummatic OR @ummatics) -from:ummatics",
+                "query": "(ummatics OR ummatic OR @ummatics) -is:retweet -from:ummatics",
                 "max_results": min(max_tweets, 100),
                 "tweet.fields": "created_at,public_metrics,author_id",
                 "expansions": "author_id",
                 "user.fields": "username"
             }
             
-            response = requests.get(search_url, headers=headers, params=params)
+            # Determine if we need to iterate in 7-day windows (since_id too old for free tier)
+            # Twitter free tier only allows searching last 7 days
+            time_windows = []
+            twitter_earliest_date = datetime.now() - timedelta(days=7)
             
-            if response.status_code == 429:
-                logger.warning("Twitter API rate limit exceeded")
-            elif response.status_code == 200:
+            if days_back:
+                # Manual backfill mode
+                start_time = max(datetime.now() - timedelta(days=days_back), twitter_earliest_date)
+                time_windows = [{"start_time": start_time.isoformat() + "Z", "end_time": None}]
+                logger.info(f"Using start_time={start_time.isoformat()}Z for historical backfill")
+            elif since_id and last_tweet_date:
+                # Check if last tweet is older than 7 days
+                days_since_last = (datetime.now() - last_tweet_date.replace(tzinfo=None)).days
+                if days_since_last > 7:
+                    # Need to iterate in 7-day windows, but can't go earlier than 7 days ago
+                    logger.info(f"Last tweet is {days_since_last} days old (>7 days), will iterate in 7-day windows")
+                    
+                    # Start from the later of: last tweet date OR 7 days ago (Twitter's limit)
+                    current_start = max(last_tweet_date.replace(tzinfo=None), twitter_earliest_date)
+                    now = datetime.now()
+                    
+                    # Calculate gap that will be missed due to Twitter's 7-day limit
+                    if last_tweet_date.replace(tzinfo=None) < twitter_earliest_date:
+                        gap_days = (twitter_earliest_date - last_tweet_date.replace(tzinfo=None)).days
+                        logger.warning(f"⚠️  Twitter free tier limitation: Cannot fetch tweets from {last_tweet_date} to {twitter_earliest_date.isoformat()}Z ({gap_days} days of data will be missing)")
+                    
+                    # Twitter requires end_time to be at least 10 seconds in the past
+                    now_minus_margin = datetime.now() - timedelta(seconds=30)
+                    
+                    while current_start < now_minus_margin:
+                        current_end = min(current_start + timedelta(days=7), now_minus_margin)
+                        time_windows.append({
+                            "start_time": current_start.isoformat() + "Z",
+                            "end_time": current_end.isoformat() + "Z"
+                        })
+                        current_start = current_end
+                    
+                    logger.info(f"Will fetch tweets in {len(time_windows)} windows of up to 7 days each")
+                else:
+                    # Recent enough to use since_id directly
+                    time_windows = [{"since_id": since_id}]
+                    logger.info(f"Using since_id={since_id} (last tweet {days_since_last} days ago)")
+            else:
+                # No previous tweets, fetch last 7 days
+                time_windows = [{}]
+                logger.info("No previous tweets, fetching recent tweets")
+            
+            # Fetch tweets for each time window
+            for window_idx, window in enumerate(time_windows):
+                window_params = params.copy()
+                
+                if "since_id" in window:
+                    window_params["since_id"] = window["since_id"]
+                if "start_time" in window:
+                    window_params["start_time"] = window["start_time"]
+                if "end_time" in window:
+                    window_params["end_time"] = window["end_time"]
+                
+                logger.info(f"Fetching window {window_idx + 1}/{len(time_windows)}: {window}")
+                response = requests.get(search_url, headers=headers, params=window_params)
+
+                # If Twitter returns 429 (rate limit), raise so Apify fallback runs
+                if response.status_code == 429:
+                    logger.warning("Twitter API rate limit exceeded")
+                    raise RuntimeError("Twitter API rate limit exceeded")
+                elif response.status_code != 200:
+                    logger.error(f"Twitter API error: {response.status_code} - {response.text}")
+                    raise RuntimeError(f"Twitter API error: {response.status_code}")
+                
                 data = response.json()
                 users = {user['id']: user for user in data.get('includes', {}).get('users', [])}
                 
+                window_tweets = []
                 for tweet in data.get('data', []):
                     # Convert Twitter API format to Apify-like format for consistent processing
                     author_id = tweet.get('author_id', '')
                     author_username = users.get(author_id, {}).get('username', 'Unknown')
                     
-                    all_tweets.append({
+                    window_tweets.append({
                         'id': tweet['id'],
                         'text': tweet.get('text', ''),
                         'author': {'userName': author_username},
@@ -867,9 +950,10 @@ def ingest_twitter(max_tweets=100, days_back=None):
                         'replyCount': tweet.get('public_metrics', {}).get('reply_count', 0)
                     })
                 
-                logger.info(f"Twitter API returned {len(all_tweets)} tweets")
-            else:
-                logger.error(f"Twitter API error: {response.status_code} - {response.text}")
+                all_tweets.extend(window_tweets)
+                logger.info(f"Window {window_idx + 1}/{len(time_windows)} returned {len(window_tweets)} tweets (total: {len(all_tweets)})")
+            
+            logger.info(f"Twitter API returned {len(all_tweets)} total tweets across {len(time_windows)} window(s)")
         
         except Exception as e:
             logger.warning(f"Twitter API error: {e}, falling back to Apify")
@@ -955,8 +1039,7 @@ def ingest_twitter(max_tweets=100, days_back=None):
             except Exception as apify_error:
                 logger.error(f"Apify error: {apify_error}, unable to fetch Twitter mentions")
         
-        # ALWAYS fetch follower count from Twitter API (not Apify)
-        
+        # ALWAYS fetch follower count from Twitter API (counts against quota but necessary)
         follower_count = 0
         if TWITTER_BEARER_TOKEN:
             try:
@@ -977,27 +1060,7 @@ def ingest_twitter(max_tweets=100, days_back=None):
             except Exception as e:
                 logger.warning(f"Error fetching follower count from Twitter API: {e}")
         
-        # Fallback to previous follower count if API fails
-        if follower_count == 0:
-            try:
-                user_url = "https://api.twitter.com/2/users/by/username/ummatics"
-                headers = {"Authorization": f"Bearer {TWITTER_BEARER_TOKEN}"}
-                params = {"user.fields": "public_metrics"}
-                response = requests.get(user_url, headers=headers, params=params)
-                
-                if response.status_code == 200:
-                    user_data = response.json()
-                    if 'data' in user_data and 'public_metrics' in user_data['data']:
-                        follower_count = user_data['data']['public_metrics'].get('followers_count', 0)
-                        logger.info(f"Fetched follower count from Twitter API: {follower_count}")
-                elif response.status_code == 429:
-                    logger.warning("Twitter API rate limit for user lookup")
-                else:
-                    logger.warning(f"Could not fetch follower count: HTTP {response.status_code}")
-            except Exception as e:
-                logger.warning(f"Error fetching follower count from Twitter API: {e}")
-        
-        # Fallback to previous follower count if API fails
+        # Fallback to previous follower count from database if API fails or quota exhausted
         if follower_count == 0:
             conn = get_db_connection()
             cur = conn.cursor()
@@ -1009,7 +1072,7 @@ def ingest_twitter(max_tweets=100, days_back=None):
             result = cur.fetchone()
             if result and result[0] > 0:
                 follower_count = result[0]
-                logger.info(f"Using previous follower count: {follower_count}")
+                logger.info(f"Using previous follower count from database: {follower_count}")
             cur.close()
             conn.close()
         
@@ -1049,10 +1112,8 @@ def ingest_twitter(max_tweets=100, days_back=None):
                 content = tweet.get('text', '')
                 post_url = tweet.get('url', f"https://twitter.com/{author_username}/status/{tweet_id}")
                 
-                # Skip retweets - original posts already show retweet counts
-                if content.startswith('RT @'):
-                    logger.debug(f"Skipping retweet: {tweet_id}")
-                    continue
+                # Note: Retweets already filtered at API level with -is:retweet query parameter
+                # This saves quota by not fetching retweets in the first place
                 
                 # Parse created date - handle multiple formats
                 created_at = tweet.get('createdAt', '')
