@@ -46,6 +46,11 @@ TWITTER_BEARER_TOKEN = os.getenv('TWITTER_BEARER_TOKEN', '')  # Used for followe
 GA4_PROPERTY_ID = os.getenv('GA4_PROPERTY_ID', '')
 CONTACT_EMAIL = os.getenv('CONTACT_EMAIL', 'contact@ummatics.org')
 
+# Apify cost guard configuration
+APIFY_USAGE_GUARD_ENABLED = os.getenv('APIFY_USAGE_GUARD_ENABLED', '1') in ('1', 'true', 'True')
+APIFY_USAGE_SOFT_LIMIT_USD = float(os.getenv('APIFY_USAGE_SOFT_LIMIT_USD', '4.5'))
+APIFY_MAX_ITEMS = int(os.getenv('APIFY_MAX_ITEMS', '25'))
+
 
 def get_db_connection():
     """Create database connection"""
@@ -58,6 +63,87 @@ def get_current_week_dates():
     monday = today - timedelta(days=today.weekday())
     sunday = monday + timedelta(days=6)
     return monday, sunday
+
+
+def get_apify_monthly_usage_status(apify_token):
+    """Fetch Apify monthly usage status for cost guarding.
+
+    Returns dict with keys:
+    - actors_enabled: bool | None
+    - usage_usd: float | None
+    - max_usage_usd: float | None
+    - usage_cycle: dict | None
+    """
+    status = {
+        'actors_enabled': None,
+        'usage_usd': None,
+        'max_usage_usd': None,
+        'usage_cycle': None,
+    }
+
+    if not apify_token:
+        return status
+
+    try:
+        me_resp = requests.get(
+            'https://api.apify.com/v2/users/me',
+            params={'token': apify_token},
+            timeout=15,
+        )
+        if me_resp.status_code == 200:
+            me_data = me_resp.json().get('data', {})
+            actors_feature = me_data.get('effectivePlatformFeatures', {}).get('ACTORS', {})
+            if isinstance(actors_feature, dict):
+                status['actors_enabled'] = actors_feature.get('isEnabled')
+            status['max_usage_usd'] = (me_data.get('plan', {}) or {}).get('maxMonthlyUsageUsd')
+    except Exception as e:
+        logger.warning(f"Could not fetch Apify account feature status: {e}")
+
+    try:
+        usage_resp = requests.get(
+            'https://api.apify.com/v2/users/me/usage/monthly',
+            params={'token': apify_token},
+            timeout=15,
+        )
+        if usage_resp.status_code == 200:
+            usage_data = usage_resp.json().get('data', {})
+            status['usage_cycle'] = usage_data.get('usageCycle')
+            # Apify returns usage in credits USD after discounts.
+            status['usage_usd'] = usage_data.get('totalUsageCreditsUsdAfterVolumeDiscount')
+        else:
+            logger.warning(f"Could not fetch Apify monthly usage: HTTP {usage_resp.status_code}")
+    except Exception as e:
+        logger.warning(f"Could not fetch Apify monthly usage: {e}")
+
+    return status
+
+
+def should_skip_apify_run(apify_token):
+    """Return (skip: bool, reason: str) based on account status and soft spend cap."""
+    if not APIFY_USAGE_GUARD_ENABLED:
+        return False, ''
+
+    status = get_apify_monthly_usage_status(apify_token)
+
+    if status.get('actors_enabled') is False:
+        return True, 'Apify ACTORS feature is disabled for this billing cycle'
+
+    usage_usd = status.get('usage_usd')
+    max_usage_usd = status.get('max_usage_usd')
+
+    if usage_usd is not None and usage_usd >= APIFY_USAGE_SOFT_LIMIT_USD:
+        return True, (
+            f"Apify monthly usage ${usage_usd:.2f} reached soft cap "
+            f"${APIFY_USAGE_SOFT_LIMIT_USD:.2f}"
+        )
+
+    if usage_usd is not None and max_usage_usd is not None and usage_usd >= max_usage_usd:
+        return True, (
+            f"Apify monthly usage ${usage_usd:.2f} reached account max "
+            f"${float(max_usage_usd):.2f}"
+        )
+
+    return False, ''
 
 
 def analyze_sentiment(text):
@@ -926,6 +1012,14 @@ def ingest_twitter(max_tweets=100, days_back=None):
                 if response.status_code == 429:
                     logger.warning("Twitter API rate limit exceeded")
                     raise RuntimeError("Twitter API rate limit exceeded")
+                elif response.status_code == 402:
+                    # CreditsDepleted: Twitter credit-based billing - account has no credits
+                    # This is different from 429 (monthly quota reset) - requires payment/credits
+                    # Check Twitter developer portal: https://developer.twitter.com/
+                    logger.error("Twitter API credits depleted (HTTP 402 CreditsDepleted) - "
+                                 "account needs credits added. This does NOT reset monthly. "
+                                 "See: https://developer.twitter.com/")
+                    raise RuntimeError("Twitter API credits depleted (payment required)")
                 elif response.status_code != 200:
                     logger.error(f"Twitter API error: {response.status_code} - {response.text}")
                     raise RuntimeError(f"Twitter API error: {response.status_code}")
@@ -962,23 +1056,38 @@ def ingest_twitter(max_tweets=100, days_back=None):
                 logger.warning("Apify API token not configured, skipping Apify fallback")
                 return
 
+            skip_apify, skip_reason = should_skip_apify_run(APIFY_API_TOKEN)
+            if skip_apify:
+                logger.warning(f"Skipping Apify fallback: {skip_reason}")
+                return
+
             try:
                 logger.info("Attempting to use Apify Twitter Scraper...")
                 client = ApifyClient(APIFY_API_TOKEN)
                 
-                # Use quoted phrases for exact word matching (not substring)
-                # Exclude retweets at API level to save quota (-is:retweet)
+                # Use a single combined query to avoid duplicate billing across two separate runs.
+                # Exclude retweets and our own account at query level to reduce paid items.
                 search_queries = [
-                    '"ummatics" -is:retweet -from:ummatics',
-                    '"ummatic" -is:retweet -from:ummatics'
+                    '("ummatics" OR "ummatic") -is:retweet -from:ummatics'
                 ]
+
+                # Limit Apify pull to tweets newer than the last stored tweet date where possible.
+                # This reduces billed duplicates even before our DB-level dedupe runs.
+                apify_since_date = None
+                apify_until_date = datetime.now().strftime("%Y-%m-%d")
+                if days_back:
+                    apify_since_date = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
+                elif last_tweet_date:
+                    last_seen = last_tweet_date.replace(tzinfo=None)
+                    # Include 1-day overlap to handle timezone differences and late indexing.
+                    apify_since_date = (last_seen - timedelta(days=1)).strftime("%Y-%m-%d")
                 
                 for search_query in search_queries:
                     logger.info(f"Searching Twitter via Apify for: {search_query}")
                     
                     run_input = {
                         "searchTerms": [search_query],
-                        "maxItems": max_tweets,
+                        "maxItems": min(max_tweets, APIFY_MAX_ITEMS),
                         "includeSearchTerms": False,
                         "onlyImage": False,
                         "onlyQuote": False,
@@ -988,13 +1097,11 @@ def ingest_twitter(max_tweets=100, days_back=None):
                         "sort": "Latest",
                     }
                     
-                    if days_back:
-                        start_date = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
-                        end_date = datetime.now().strftime("%Y-%m-%d")
-                        # Use 'since' and 'until' parameters for date filtering
-                        run_input["since"] = start_date
-                        run_input["until"] = end_date
-                        logger.info(f"Fetching historical tweets from {start_date} to {end_date}")
+                    if apify_since_date:
+                        # Use 'since' and 'until' parameters for date filtering.
+                        run_input["since"] = apify_since_date
+                        run_input["until"] = apify_until_date
+                        logger.info(f"Apify date filter: since={apify_since_date}, until={apify_until_date}")
                     
                     # Use timeout to prevent runaway scraping - accept whatever we get within time limit
                     run = client.actor("61RPP7dywgiy0JPD0").call(

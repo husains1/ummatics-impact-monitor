@@ -3963,3 +3963,175 @@ LESSONS_LEARNED.md contained actual Apify API tokens in deployment notes (old an
 - ✅ Review diffs for secrets before committing: `git diff | grep -iE "token|key|secret|password"`
 - ✅ `.env` is in `.gitignore` — keep all real credentials there only
 
+---
+
+## Twitter Data Stalled Since March 30, 2026 - CreditsDepleted (Apr 5, 2026)
+
+### Investigation Summary
+
+**Symptoms:**
+- Last Twitter data: 2026-03-29T23:45:04 (6 tweets on March 29)
+- After March 29: `mentions_count = 0` for all days through April 5
+- Scheduler IS running: platform_metrics rows created daily ✅
+- Follower count appearing updated (6636) but it's the **cached DB value** ✅
+- No new tweets ingested for 7 days
+
+**Root Cause: HTTP 402 CreditsDepleted (NOT 429 UsageCapExceeded)**
+
+```bash
+# Direct Twitter API test:
+curl "https://api.twitter.com/2/tweets/search/recent?query=..." \
+  -H "Authorization: Bearer $TWITTER_BEARER_TOKEN"
+  
+# Response:
+{
+  "account_id": 1602505654429749249,
+  "title": "CreditsDepleted",
+  "detail": "Your enrolled account does not have any credits to fulfill this request.",
+  "type": "https://api.twitter.com/2/problems/credits"
+}
+# HTTP Status: 402 Payment Required
+```
+
+**CRUCIAL DIFFERENCE between 402 and 429:**
+| Error | Code | Meaning | Resets? |
+|-------|------|---------|---------|
+| `UsageCapExceeded` | 429 | Monthly quota hit | ✅ Auto-resets next billing period |
+| `CreditsDepleted` | 402 | Credit balance zero | ❌ Does NOT reset — requires payment |
+
+**Why follower count still shows as "updated":**
+- Twitter user lookup ALSO returns 402 (CreditsDepleted)
+- Code's fallback uses the last value from database (`social_media_daily_metrics`)
+- The cached 6636 is from the last successful API call (March 29 or earlier)
+- Platform_metrics rows are still created (by the scheduler running), just with 0 new mentions
+
+**How Many Credits Were Used:**
+- 44 Twitter tweets ingested between March 13 and March 29 (16 days into billing period)
+- This is WELL BELOW the 100 tweet monthly quota
+- Twitter's credit system appears to be different from the original monthly quota — it may be a one-time free credit allocation that doesn't renew monthly
+
+**Code Flow When 402 Occurs:**
+1. Twitter API returns 402 → caught by `elif response.status_code != 200`
+2. Raises `RuntimeError("Twitter API credits depleted (payment required)")` (after fix)
+3. Caught at outer `except Exception as e` → logs warning, tries Apify fallback  
+4. Apify free plan: "You cannot use the API with the Free Plan" → fails
+5. Result: 0 new tweets, `mentions_count = 0`
+
+**Code Fix Applied (Apr 5, 2026):**
+Added specific 402 handling in `backend/ingestion.py` with clear log message:
+```python
+elif response.status_code == 402:
+    logger.error("Twitter API credits depleted (HTTP 402 CreditsDepleted) - "
+                 "account needs credits added. This does NOT reset monthly. "
+                 "See: https://developer.twitter.com/")
+    raise RuntimeError("Twitter API credits depleted (payment required)")
+```
+
+### Resolution Options
+
+**Option 1: Add Twitter API Credits (Recommended for automation)**
+- Visit https://developer.twitter.com/ → Billing → Add Credits
+- Credit cost varies; check current X/Twitter developer pricing
+- Credits DO NOT automatically renew (unlike the old monthly quota system)
+
+**Option 2: Manual Apify Console Run (Free, but manual)**
+- Login to Apify console: https://console.apify.com/
+- Run actor `61RPP7dywgiy0JPD0` manually with search terms
+- Export JSON and upload to EC2 (if needed for historical backfill)
+- Limitation: not automated, requires intervention
+
+**Option 3: Accept the Gap**
+- Wait — check if Twitter ever offers free credits again
+- The current gap (March 30+) may grow until credits are added
+- Data quality impact: gap in Twitter mentions history
+
+### Key Learnings
+
+- ✅ **402 CreditsDepleted ≠ 429 UsageCapExceeded**: 402 needs payment, 429 resets monthly
+- ✅ Twitter's billing model changed from "monthly quota" to "credits" system
+- ✅ Check the HTTP status code, not just "rate limit" assumption
+- ✅ Follower count showing as "updated" is misleading — it's from DB cache
+- ✅ Always test the Twitter API directly (`curl`) to confirm the exact error
+- ❌ Do NOT assume quota reset will fix CreditsDepleted — it won't
+- ❌ Do NOT confuse follower count updates (cached) with successful API calls
+
+---
+
+## Apify Credits Exhausted Despite Low Stored Tweets (Apr 5, 2026)
+
+### Verified Account State
+
+- Provided token is valid (`/v2/users/me` succeeds)
+- Plan is `FREE` with `$5` monthly usage credits
+- Account-level platform features are disabled with:
+  - `MONTHLY_TOTAL_USAGE_HARD_LIMIT_EXCEEDED`
+- Console reset date shown: `2026-04-18`
+- Last run info is accessible and confirmed `SUCCEEDED` via API
+
+### Why Credits Run Out Even With Low Tweets In Database
+
+The main issue is that **Apify billing is based on actor output events (tweets returned by actor), not tweets finally inserted into our DB**.
+
+Additional multipliers in our current ingestion flow:
+
+1. **Scheduler frequency**: runs 3x daily (`8,14,20 UTC`) -> ~90 runs/month.
+2. **Two Apify queries per run**:
+  - `"ummatics" -is:retweet -from:ummatics`
+  - `"ummatic" -is:retweet -from:ummatics`
+3. **Charge happens before local filtering**:
+  - duplicates
+  - existing tweet IDs already in DB
+  - tweets filtered after retrieval
+4. **Current actor pricing** is effectively `$0.04 per tweet` (`$40 / 1,000 tweets`).
+
+This means even "small" outputs can consume credits quickly.
+
+Example math:
+- 4 tweets in one run ~= `$0.16`
+- 90 runs/month x `$0.16` ~= `$14.40` (well above free `$5`)
+- Free tier budget `$5` at `$0.04/tweet` ~= only ~125 billed tweets/month
+
+### Practical Mitigations
+
+1. Reduce scheduler frequency for Apify fallback mode (e.g., daily or every 2-3 days).
+2. Use only one query term per run when credits are low.
+3. Add a monthly cap guard in code:
+  - skip Apify if estimated monthly spend is near limit.
+4. Keep Twitter API first, but treat Apify as burst/manual fallback.
+5. If continuous automation is required, increase Apify usage cap or move to paid plan.
+
+### Key Learning
+
+- Low tweet counts in dashboard do not imply low Apify spend; billing tracks actor output events across all runs, including items later discarded by dedupe/filtering.
+
+---
+
+## Apify Duplicate Reduction + Daily Scheduling (Apr 5, 2026)
+
+### Problem
+- Apify usage was expensive relative to stored tweet volume.
+- Duplicate fetches were amplified by:
+  - running two separate Apify queries each cycle
+  - running ingestion 3x daily
+  - fetching data outside the strictly needed date window
+
+### Changes Implemented
+
+1. **Apify fallback query consolidation** (`backend/ingestion.py`)
+- Replaced two queries with one combined query:
+  - `("ummatics" OR "ummatic") -is:retweet -from:ummatics`
+- This reduces overlap and duplicate billed items between parallel query runs.
+
+2. **Apify date-window filter from last stored tweet** (`backend/ingestion.py`)
+- When not in manual backfill mode, Apify now uses:
+  - `since = last_tweet_date - 1 day` (safety overlap)
+  - `until = today`
+- This approximates `since_id` behavior for Apify by limiting pull range to recent/newer content.
+
+3. **Scheduler reduced to once daily** (`backend/scheduler.py`)
+- Ingestion: daily at `08:00 UTC`
+- Sentiment update: daily at `08:30 UTC`
+
+### Key Learning
+- Apify cannot natively use Twitter `since_id`, but combining query terms and enforcing a narrow `since/until` window significantly reduces duplicate billed fetches.
+
